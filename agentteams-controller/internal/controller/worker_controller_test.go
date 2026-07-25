@@ -28,6 +28,7 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -195,6 +196,41 @@ func newWorker(name string, spec v1beta1.WorkerSpec) *v1beta1.Worker {
 	return &v1beta1.Worker{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 		Spec:       spec,
+	}
+}
+
+func TestWorkerReconcileDeleteBlocksReferencedTeamMember(t *testing.T) {
+	deletionTime := metav1.Now()
+	worker := newWorker("alpha-dev", v1beta1.WorkerSpec{})
+	worker.Finalizers = []string{finalizerName}
+	worker.DeletionTimestamp = &deletionTime
+	team := &v1beta1.Team{
+		ObjectMeta: metav1.ObjectMeta{Name: "alpha-team", Namespace: "default"},
+		Spec: v1beta1.TeamSpec{
+			WorkerMembers: []v1beta1.TeamWorkerRef{
+				{Name: "alpha-lead", Role: "team_leader"},
+				{Name: "alpha-dev", Role: "worker"},
+			},
+		},
+	}
+	rig := newWorkerRig(t, worker, team)
+
+	result, err := rig.r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: worker.Name, Namespace: worker.Namespace},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("RequeueAfter = %v, want a delayed retry", result.RequeueAfter)
+	}
+
+	var got v1beta1.Worker
+	if err := rig.client.Get(context.Background(), client.ObjectKeyFromObject(worker), &got); err != nil {
+		t.Fatalf("get deleting Worker: %v", err)
+	}
+	if !controllerutil.ContainsFinalizer(&got, finalizerName) {
+		t.Fatalf("finalizer %q was removed while Worker is referenced by Team", finalizerName)
 	}
 }
 

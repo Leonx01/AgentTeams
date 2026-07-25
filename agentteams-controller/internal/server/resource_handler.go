@@ -853,7 +853,7 @@ func (h *ResourceHandler) validateTeamWorkerMembers(ctx context.Context, teamNam
 		switch ref.Role {
 		case "team_leader":
 			leaders++
-		case "", "worker":
+		case "worker":
 		default:
 			return fmt.Errorf("Worker %s has invalid role %q", ref.Name, ref.Role)
 		}

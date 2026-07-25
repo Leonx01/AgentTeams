@@ -317,6 +317,13 @@ func (r *WorkerReconciler) reconcileDelete(ctx context.Context, w *v1beta1.Worke
 	logger := log.FromContext(ctx)
 	logger.Info("deleting worker", "name", w.Name)
 
+	if _, inTeam, err := r.teamRoleForWorker(ctx, w.Namespace, w.Name); err != nil {
+		return reconcile.Result{}, err
+	} else if inTeam {
+		logger.Info("worker deletion blocked while referenced by Team", "name", w.Name)
+		return reconcile.Result{RequeueAfter: reconcileInterval}, nil
+	}
+
 	deps := MemberDeps{
 		Provisioner:                 r.Provisioner,
 		Deployer:                    r.Deployer,

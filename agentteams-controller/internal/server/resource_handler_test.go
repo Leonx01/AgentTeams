@@ -238,6 +238,36 @@ func TestCreateTeamRejectsMissingWorkerReference(t *testing.T) {
 	}
 }
 
+func TestCreateTeamRejectsEmptyWorkerRole(t *testing.T) {
+	scheme := newServerTestScheme(t)
+	leader := &v1beta1.Worker{
+		ObjectMeta: metav1.ObjectMeta{Name: "alpha-lead", Namespace: "default"},
+	}
+	worker := &v1beta1.Worker{
+		ObjectMeta: metav1.ObjectMeta{Name: "alpha-dev", Namespace: "default"},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(leader, worker).Build()
+	handler := NewResourceHandler(k8sClient, "default", nil, "")
+
+	body := []byte(`{
+		"name":"alpha-team",
+		"workerMembers":[
+			{"name":"alpha-lead","role":"team_leader"},
+			{"name":"alpha-dev"}
+		]
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/teams", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.CreateTeam(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid role") {
+		t.Fatalf("response should identify the empty role: %s", rec.Body.String())
+	}
+}
+
 func TestCreateManagerPreservesResources(t *testing.T) {
 	scheme := newServerTestScheme(t)
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
