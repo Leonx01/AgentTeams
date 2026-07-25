@@ -383,6 +383,15 @@ func (r *WorkerReconciler) reconcileManagerAccess(ctx context.Context, w *v1beta
 	if inTeam {
 		// TeamReconciler owns Team-scoped Manager access and channel policies.
 		if role != RoleTeamLeader {
+			if w.Status.RoomID != "" {
+				if err := r.Provisioner.ForceLeaveRoom(
+					ctx,
+					r.ManagerConfig.MatrixUserID("manager"),
+					w.Status.RoomID,
+				); err != nil {
+					logger.Error(err, "failed to remove Manager from Team worker personal room (non-fatal)", "worker", w.Name, "roomID", w.Status.RoomID)
+				}
+			}
 			if err := r.ManagerConfig.UpdateManagerGroupAllowFrom(r.ManagerConfig.MatrixUserID(runtimeName), false); err != nil {
 				logger.Error(err, "failed to revoke standalone Manager groupAllowFrom for Team worker (non-fatal)", "worker", w.Name, "runtimeName", runtimeName)
 			}

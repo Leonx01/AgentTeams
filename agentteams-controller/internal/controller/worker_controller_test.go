@@ -234,6 +234,35 @@ func TestWorkerReconcileDeleteBlocksReferencedTeamMember(t *testing.T) {
 	}
 }
 
+func TestReconcileManagerAccessRemovesManagerFromTeamWorkerRoom(t *testing.T) {
+	ctx := context.Background()
+	worker := &v1beta1.Worker{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "default"},
+		Status: v1beta1.WorkerStatus{
+			RoomID: "!room-dev:matrix.local",
+		},
+	}
+	team := &v1beta1.Team{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-a", Namespace: "default"},
+		Spec: v1beta1.TeamSpec{
+			WorkerMembers: []v1beta1.TeamWorkerRef{
+				{Name: "lead", Role: RoleTeamLeader.String()},
+				{Name: "dev", Role: RoleTeamWorker.String()},
+			},
+		},
+	}
+	rig := newWorkerRig(t, worker.DeepCopy(), team.DeepCopy())
+	rig.r.ManagerConfig, _ = newTestManagerConfig(t)
+
+	rig.r.reconcileManagerAccess(ctx, worker, MemberContext{RuntimeName: "dev"}, &MemberState{})
+
+	if got := rig.provisioner.Calls.ForceLeaveRoom; len(got) != 1 {
+		t.Fatalf("ForceLeaveRoom calls=%+v, want Manager removed from Team worker room", got)
+	} else if got[0].UserID != "@manager:matrix.local" || got[0].RoomID != "!room-dev:matrix.local" {
+		t.Fatalf("ForceLeaveRoom call=%+v, want Manager removed from !room-dev:matrix.local", got[0])
+	}
+}
+
 func testWorkerDepsVolumes() []v1beta1.WorkerVolumeSpec {
 	return []v1beta1.WorkerVolumeSpec{{
 		Name: "agentteams-prod-001",
