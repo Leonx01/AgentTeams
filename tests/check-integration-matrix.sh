@@ -136,5 +136,10 @@ grep -Fq 'AGENTTEAMS_INSTALL_PRELOADED_WORKER_IMAGES:-0' "${INSTALLER_FILE}" || 
 if grep -Fq '| gzip > /tmp/agentteams-' "${WORKFLOW_FILE}"; then
     fail "image archives must not use single-core gzip compression"
 fi
+grep -Fq 'EXPECTED_IMAGE_COUNT=$((2 + ${#WORKER_IMAGE_NAMES[@]}))' "${WORKFLOW_FILE}" || \
+    fail "test shards must count only embedded, manager, and declared Worker images"
+if grep -Fq 'pattern: image-common-*' "${WORKFLOW_FILE}"; then
+    fail "test shards must not download the build-only controller image"
+fi
 
 echo "Integration coverage matrix checks passed."
