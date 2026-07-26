@@ -354,18 +354,37 @@ jobs:
           name: image-manager-${{ matrix.manager_runtime }}
           path: /tmp/images/manager
 
-      - name: Download Worker image
+      - name: Download OpenClaw Worker image
+        if: contains(matrix.worker_images, 'openclaw')
         uses: actions/download-artifact@v4
         with:
-          name: image-worker-${{ matrix.worker_runtime }}
-          path: /tmp/images/worker
+          name: image-worker-openclaw
+          path: /tmp/images/worker-openclaw
+
+      - name: Download CoPaw Worker image
+        if: contains(matrix.worker_images, 'copaw')
+        uses: actions/download-artifact@v4
+        with:
+          name: image-worker-copaw
+          path: /tmp/images/worker-copaw
+
+      - name: Download Hermes Worker image
+        if: contains(matrix.worker_images, 'hermes')
+        uses: actions/download-artifact@v4
+        with:
+          name: image-worker-hermes
+          path: /tmp/images/worker-hermes
 
       - name: Load images
+        env:
+          WORKER_IMAGES: ${{ join(matrix.worker_images, ' ') }}
         run: |
           set -euo pipefail
+          read -r -a WORKER_IMAGE_NAMES <<<"${WORKER_IMAGES}"
+          EXPECTED_IMAGE_COUNT=$((3 + ${#WORKER_IMAGE_NAMES[@]}))
           IMAGE_COUNT=$(find /tmp/images -type f -name '*.tar.gz' | wc -l | tr -d ' ')
-          if [ "${IMAGE_COUNT}" -ne 4 ]; then
-            echo "Expected 4 image archives (controller, embedded, manager, worker), found ${IMAGE_COUNT}" >&2
+          if [ "${IMAGE_COUNT}" -ne "${EXPECTED_IMAGE_COUNT}" ]; then
+            echo "Expected ${EXPECTED_IMAGE_COUNT} image archives (controller, embedded, manager, declared workers), found ${IMAGE_COUNT}" >&2
             find /tmp/images -maxdepth 3 -type f -print >&2
             exit 1
           fi
@@ -395,6 +414,10 @@ jobs:
           # would make those dimensions run hidden openclaw workers and
           # invalidate the parallel-runtime coverage we set up above.
           AGENTTEAMS_DEFAULT_WORKER_RUNTIME: ${{ matrix.worker_runtime }}
+          # CI loads exactly the Worker images declared by this shard. The
+          # installer still validates the preloaded images, but does not pull
+          # unrelated optional runtimes.
+          AGENTTEAMS_INSTALL_PRELOADED_WORKER_IMAGES: "1"
         run: |
           FILTER="${{ github.event.inputs.test_filter }}"
           if [ -z "$FILTER" ]; then

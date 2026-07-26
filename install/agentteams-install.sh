@@ -33,6 +33,8 @@
 #   AGENTTEAMS_INSTALL_WORKER_IMAGE        Override worker image  (e.g., local build)
 #   AGENTTEAMS_INSTALL_COPAW_WORKER_IMAGE  Override copaw worker image (e.g., local build)
 #   AGENTTEAMS_INSTALL_HERMES_WORKER_IMAGE Override hermes worker image (e.g., local build)
+#   AGENTTEAMS_INSTALL_PRELOADED_WORKER_IMAGES
+#                                      Use only locally preloaded Worker images; skip missing optional runtimes
 #   AGENTTEAMS_NACOS_REGISTRY_URI          Default Nacos registry URI for Worker market search/import
 #                                      (default: nacos://market.agentteams.io:80/public)
 #   AGENTTEAMS_NACOS_USERNAME              Default Nacos username for nacos:// package imports (optional)
@@ -3641,10 +3643,17 @@ EOF
         _pull_image "${MANAGER_IMAGE}" "install.image.exists" "install.image.pulling_manager"
     fi
 
-    # Pull all worker runtime images (workers may use any runtime regardless of the default)
-    _pull_image "${WORKER_IMAGE}" "install.image.worker_exists" "install.image.pulling_worker"
-    _pull_image "${COPAW_WORKER_IMAGE}" "install.image.worker_exists" "install.image.pulling_worker"
-    _pull_image "${HERMES_WORKER_IMAGE}" "install.image.worker_exists" "install.image.pulling_worker"
+    # Pull all worker runtime images (workers may use any runtime regardless of the default).
+    # CI shards preload only the runtimes they exercise to avoid downloading
+    # multi-gigabyte optional images on every isolated runner.
+    for _worker_image in "${WORKER_IMAGE}" "${COPAW_WORKER_IMAGE}" "${HERMES_WORKER_IMAGE}"; do
+        if [ "${AGENTTEAMS_INSTALL_PRELOADED_WORKER_IMAGES:-0}" = "1" ] &&
+            ! _local_image_exists "${_worker_image}"; then
+            log "Skipping optional Worker image not preloaded locally: ${_worker_image}"
+            continue
+        fi
+        _pull_image "${_worker_image}" "install.image.worker_exists" "install.image.pulling_worker"
+    done
 
     # --- Pre-upgrade: extract Matrix passwords from running old containers ---
     # Only needed when upgrading FROM old architecture (v1.0.9) TO embedded.

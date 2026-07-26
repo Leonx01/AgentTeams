@@ -5,6 +5,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MATRIX_FILE="${SCRIPT_DIR}/integration-test-matrix.json"
+WORKFLOW_FILE="${SCRIPT_DIR}/../.github/workflows/test-integration.yml"
+INSTALLER_FILE="${SCRIPT_DIR}/../install/agentteams-install.sh"
 
 fail() {
     echo "FAIL: $*" >&2
@@ -65,5 +67,46 @@ cleanup_not_last=$(jq -r '
     | "\(.shard)/\(.manager_runtime)/\(.worker_runtime)"
 ' "${MATRIX_FILE}")
 [ -z "${cleanup_not_last}" ] || fail "test 100 must be last in: ${cleanup_not_last}"
+
+invalid_worker_images=$(jq -r '
+    .matrix[]
+    | .worker_runtime as $worker_runtime
+    | select(
+        (.worker_images | type) != "array" or
+        (.worker_images | length) == 0 or
+        ([.worker_images[] | select(
+            . != "openclaw" and . != "copaw" and . != "hermes"
+        )] | length) > 0 or
+        (.worker_images | index($worker_runtime)) == null
+    )
+    | "\(.shard)/\(.manager_runtime)/\(.worker_runtime)"
+' "${MATRIX_FILE}")
+[ -z "${invalid_worker_images}" ] || \
+    fail "worker_images must be non-empty, valid, and include worker_runtime: ${invalid_worker_images}"
+
+runtime_switch_missing_images=$(jq -r '
+    .matrix[]
+    | select(
+        (.tests | index("23")) != null and
+        (
+            (.worker_images | index("openclaw")) == null or
+            (.worker_images | index("copaw")) == null
+        )
+    )
+    | "\(.shard)/\(.manager_runtime)/\(.worker_runtime)"
+' "${MATRIX_FILE}")
+[ -z "${runtime_switch_missing_images}" ] || \
+    fail "test 23 shards must load both openclaw and copaw images: ${runtime_switch_missing_images}"
+
+for runtime in openclaw copaw hermes; do
+    grep -Fq "if: contains(matrix.worker_images, '${runtime}')" "${WORKFLOW_FILE}" || \
+        fail "workflow does not conditionally download the ${runtime} Worker image"
+done
+grep -Fq "WORKER_IMAGES: \${{ join(matrix.worker_images, ' ') }}" "${WORKFLOW_FILE}" || \
+    fail "workflow does not derive the expected archive count from worker_images"
+grep -Fq 'AGENTTEAMS_INSTALL_PRELOADED_WORKER_IMAGES: "1"' "${WORKFLOW_FILE}" || \
+    fail "workflow does not enable preloaded Worker image mode"
+grep -Fq 'AGENTTEAMS_INSTALL_PRELOADED_WORKER_IMAGES:-0' "${INSTALLER_FILE}" || \
+    fail "installer does not support preloaded Worker image mode"
 
 echo "Integration coverage matrix checks passed."
