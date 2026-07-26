@@ -141,5 +141,7 @@ grep -Fq 'EXPECTED_IMAGE_COUNT=$((2 + ${#WORKER_IMAGE_NAMES[@]}))' "${WORKFLOW_F
 if grep -Fq 'pattern: image-common-*' "${WORKFLOW_FILE}"; then
     fail "test shards must not download the build-only controller image"
 fi
+grep -Fq "find /tmp/images -type f -name '*.tar.zst' -delete" "${WORKFLOW_FILE}" || \
+    fail "test shards must remove compressed archives after loading images"
 
 echo "Integration coverage matrix checks passed."

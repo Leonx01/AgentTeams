@@ -404,6 +404,7 @@ jobs:
                 echo "Loading ${image}"
                 zstd -dc "${image}" | docker load
               done
+          find /tmp/images -type f -name '*.tar.zst' -delete
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y jq curl unzip
