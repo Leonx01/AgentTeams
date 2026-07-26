@@ -84,16 +84,19 @@ if minio_wait_for_file "${TASK_SPEC}" 120; then
         "Manager created the correlated task brief"
 else
     log_fail "Task brief was not created within 120s: ${TASK_SPEC}"
+    test_teardown "03-assign-task"
+    test_summary
+    exit 1
 fi
 
 log_section "Verify Worker Completion"
 
-if minio_wait_for_file "${TASK_RESULT}" 300; then
+if minio_wait_for_content "${TASK_RESULT}" "${RESULT_MARKER}" 300; then
     RESULT_CONTENT=$(minio_read_file "${TASK_RESULT}")
     assert_contains "${RESULT_CONTENT}" "${RESULT_MARKER}" \
         "Alice completed the correlated task"
 else
-    log_fail "Alice result was not created within 300s: ${TASK_RESULT}"
+    log_fail "Alice result did not contain the correlated marker within 300s: ${TASK_RESULT}"
 fi
 
 log_section "Collect Metrics"

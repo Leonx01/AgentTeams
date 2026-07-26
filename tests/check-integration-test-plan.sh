@@ -53,4 +53,14 @@ if bash "${RUNNER}" --test-filter "999" --list-tests >/dev/null 2>&1; then
     fail "an empty test selection must fail"
 fi
 
+if ! grep -Fq 'minio_wait_for_content "${TASK_RESULT}" "${RESULT_MARKER}" 300' \
+    "${SCRIPT_DIR}/test-03-assign-task.sh"; then
+    fail "test 03 must wait for correlated result content, not only file existence"
+fi
+
+if ! grep -A5 -F 'Task brief was not created within 120s' \
+    "${SCRIPT_DIR}/test-03-assign-task.sh" | grep -Fq 'exit 1'; then
+    fail "test 03 must fail fast when the task brief dependency is missing"
+fi
+
 echo "Integration test plan checks passed."
