@@ -30,6 +30,7 @@ printf '%s\n' 'legacy-session' >"${TMP_DIR}/workdir/sessions/session.txt"
 printf '%s\n' 'legacy-memory' >"${TMP_DIR}/workdir/memory/memory.txt"
 
 docker run --rm -i \
+  --user "$(id -u):$(id -g)" \
   --entrypoint /opt/venv/qwenpaw/bin/python \
   -e QWENPAW_WORKING_DIR=/migration \
   -v "${TMP_DIR}/workdir:/migration" \
