@@ -8,11 +8,28 @@ AGENTTEAMS_KNOWN_STABLE_VERSION="v1.1.2"
 
 eval "$(
     sed -n \
+        -e '/^_normalize_version()/,/^}/p' \
         -e '/^_ver_lt()/,/^}/p' \
         -e '/^_use_legacy_image_env()/,/^}/p' \
         -e '/^_controller_env_prefix()/,/^}/p' \
         "${INSTALLER}"
 )"
+
+assert_normalized_version() {
+    local input="$1"
+    local expected="$2"
+    local actual
+    actual="$(_normalize_version "${input}")"
+    if [ "${actual}" != "${expected}" ]; then
+        echo "FAIL: expected ${input} to normalize to ${expected}, got ${actual}" >&2
+        exit 1
+    fi
+}
+
+assert_normalized_version "1.2.0.beta.1" "v1.2.0-beta.1"
+assert_normalized_version "v1.2.0-beta.1" "v1.2.0-beta.1"
+assert_normalized_version "1.1.2" "v1.1.2"
+assert_normalized_version "latest" "latest"
 
 assert_legacy() {
     if ! _use_legacy_image_env "$1"; then
@@ -54,6 +71,7 @@ assert_prefix "v1.1.2" "${legacy_prefix}"
 assert_prefix "latest" "${legacy_prefix}"
 assert_prefix "v1.2.0" "AGENTTEAMS_"
 assert_prefix "v1.2.0-beta.1" "AGENTTEAMS_"
+assert_prefix "$(_normalize_version "1.2.0.beta.1")" "AGENTTEAMS_"
 assert_prefix "v1.3.0" "AGENTTEAMS_"
 
 controller_env_block="$(

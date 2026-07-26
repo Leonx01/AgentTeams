@@ -52,6 +52,17 @@ set -e
 AGENTTEAMS_VERSION="${AGENTTEAMS_VERSION:-}"
 AGENTTEAMS_KNOWN_STABLE_VERSION="v1.1.2"   # fallback if GitHub API is unreachable
 
+_normalize_version() {
+    local version="$1"
+    case "${version}" in
+        [0-9]*.[0-9]*.[0-9]*) version="v${version}" ;;
+    esac
+    case "${version}" in
+        v[0-9]*.[0-9]*.[0-9]*.beta.[0-9]*) version="${version/.beta./-beta.}" ;;
+    esac
+    printf '%s' "${version}"
+}
+
 # Returns 0 (true) if $1 < $2 using semver order; "latest" is treated as greatest
 _ver_lt() {
     [ "$1" = "latest" ] && return 1
@@ -1040,6 +1051,7 @@ HERMES_WORKER_IMAGE="${AGENTTEAMS_INSTALL_HERMES_WORKER_IMAGE:-}"
 CONTROLLER_IMAGE="${AGENTTEAMS_INSTALL_CONTROLLER_IMAGE:-}"
 
 resolve_image_tags() {
+    AGENTTEAMS_VERSION="$(_normalize_version "${AGENTTEAMS_VERSION}")"
     MANAGER_IMAGE="${AGENTTEAMS_INSTALL_MANAGER_IMAGE:-${AGENTTEAMS_REGISTRY}/agentteams/agentteams-manager:${AGENTTEAMS_VERSION}}"
     MANAGER_COPAW_IMAGE="${AGENTTEAMS_INSTALL_MANAGER_COPAW_IMAGE:-${AGENTTEAMS_REGISTRY}/agentteams/agentteams-manager-copaw:${AGENTTEAMS_VERSION}}"
     WORKER_IMAGE="${AGENTTEAMS_INSTALL_WORKER_IMAGE:-${AGENTTEAMS_REGISTRY}/agentteams/agentteams-worker:${AGENTTEAMS_VERSION}}"
