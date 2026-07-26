@@ -1,0 +1,86 @@
+name: QwenPaw Worker Tests
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'qwenpaw/**'
+      - 'plugins/agentteams-matrix-channel/**'
+      - 'plugins/teamharness/**'
+      - 'plugins/workerflow/**'
+      - 'plugins/tests/teamharness/**'
+      - 'plugins/tests/workerflow/**'
+      - 'shared/**'
+      - 'Makefile'
+      - '.github/workflows/test-qwenpaw.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'qwenpaw/**'
+      - 'plugins/agentteams-matrix-channel/**'
+      - 'plugins/teamharness/**'
+      - 'plugins/workerflow/**'
+      - 'plugins/tests/teamharness/**'
+      - 'plugins/tests/workerflow/**'
+      - 'shared/**'
+      - 'Makefile'
+      - '.github/workflows/test-qwenpaw.yml'
+  workflow_dispatch: ~
+
+permissions:
+  contents: read
+
+jobs:
+  unit-and-plugin-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: python -m pip install pytest anyio pyyaml
+      - name: Run focused tests
+        env:
+          PYTHONPATH: qwenpaw/src
+        run: >-
+          python -m pytest
+          qwenpaw/tests
+          plugins/tests/teamharness
+          plugins/tests/workerflow
+
+  image-integration-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+      - uses: actions/checkout@v4
+      - name: Build QwenPaw worker image
+        run: |
+          make build-qwenpaw-worker \
+            VERSION=ci \
+            HIGRESS_REGISTRY=higress-registry.us-west-1.cr.aliyuncs.com \
+            DOCKER_BUILD_ARGS="--build-arg APT_MIRROR= --build-arg PIP_INDEX_URL=https://pypi.org/simple/"
+      - name: Verify QwenPaw 1.x workdir migration
+        env:
+          AGENTTEAMS_QWENPAW_IMAGE: agentteams/qwenpaw-worker:ci
+        run: bash qwenpaw/tests/integration/test-qwenpaw-1-workdir-migration.sh
+      - name: Run worker image integration tests
+        env:
+          AGENTTEAMS_QWENPAW_IMAGE: agentteams/qwenpaw-worker:ci
+          AGENTTEAMS_QWENPAW_IMAGE_E2E: '1'
+        run: |
+          bash qwenpaw/tests/integration/test-worker-daemon.sh
+          bash qwenpaw/tests/integration/test-sync-minio.sh
+          bash qwenpaw/tests/integration/test-update-runtime-config.sh
