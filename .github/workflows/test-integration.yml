@@ -155,13 +155,14 @@ jobs:
 
       - name: Save image
         run: |
-          docker save agentteams/agentteams-controller:latest | gzip > /tmp/agentteams-controller.tar.gz
+          docker save agentteams/agentteams-controller:latest \
+            | zstd -T0 -3 -o /tmp/agentteams-controller.tar.zst
 
       - name: Upload image
         uses: actions/upload-artifact@v4
         with:
           name: image-common-controller
-          path: /tmp/agentteams-controller.tar.gz
+          path: /tmp/agentteams-controller.tar.zst
           retention-days: 1
           compression-level: 0
 
@@ -207,13 +208,14 @@ jobs:
 
       - name: Save image
         run: |
-          docker save agentteams/openclaw-base:latest | gzip > /tmp/agentteams-openclaw-base.tar.gz
+          docker save agentteams/openclaw-base:latest \
+            | zstd -T0 -3 -o /tmp/agentteams-openclaw-base.tar.zst
 
       - name: Upload image
         uses: actions/upload-artifact@v4
         with:
           name: image-openclaw-base
-          path: /tmp/agentteams-openclaw-base.tar.gz
+          path: /tmp/agentteams-openclaw-base.tar.zst
           retention-days: 1
           compression-level: 0
 
@@ -258,7 +260,7 @@ jobs:
           path: /tmp
 
       - name: Load controller image
-        run: gunzip -c /tmp/agentteams-controller.tar.gz | docker load
+        run: zstd -dc /tmp/agentteams-controller.tar.zst | docker load
 
       - name: Download local openclaw-base image
         if: |
@@ -273,7 +275,7 @@ jobs:
         if: |
           needs.detect-changes.outputs.openclaw_base == 'true' &&
           (matrix.target == 'manager' || matrix.target == 'worker')
-        run: gunzip -c /tmp/agentteams-openclaw-base.tar.gz | docker load
+        run: zstd -dc /tmp/agentteams-openclaw-base.tar.zst | docker load
 
       - name: Build image
         run: |
@@ -313,13 +315,13 @@ jobs:
               | grep -v '<none>' \
               | grep -v 'agentteams-controller' \
               | grep -v 'openclaw-base') \
-            | gzip > /tmp/agentteams-${{ matrix.target }}.tar.gz
+            | zstd -T0 -3 -o /tmp/agentteams-${{ matrix.target }}.tar.zst
 
       - name: Upload image
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: /tmp/agentteams-${{ matrix.target }}.tar.gz
+          path: /tmp/agentteams-${{ matrix.target }}.tar.zst
           retention-days: 1
           compression-level: 0
 
@@ -392,16 +394,16 @@ jobs:
           set -euo pipefail
           read -r -a WORKER_IMAGE_NAMES <<<"${WORKER_IMAGES}"
           EXPECTED_IMAGE_COUNT=$((3 + ${#WORKER_IMAGE_NAMES[@]}))
-          IMAGE_COUNT=$(find /tmp/images -type f -name '*.tar.gz' | wc -l | tr -d ' ')
+          IMAGE_COUNT=$(find /tmp/images -type f -name '*.tar.zst' | wc -l | tr -d ' ')
           if [ "${IMAGE_COUNT}" -ne "${EXPECTED_IMAGE_COUNT}" ]; then
             echo "Expected ${EXPECTED_IMAGE_COUNT} image archives (controller, embedded, manager, declared workers), found ${IMAGE_COUNT}" >&2
             find /tmp/images -maxdepth 3 -type f -print >&2
             exit 1
           fi
-          find /tmp/images -type f -name '*.tar.gz' -print0 \
+          find /tmp/images -type f -name '*.tar.zst' -print0 \
             | while IFS= read -r -d '' image; do
                 echo "Loading ${image}"
-                gunzip -c "${image}" | docker load
+                zstd -dc "${image}" | docker load
               done
 
       - name: Install dependencies
