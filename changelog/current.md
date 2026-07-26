@@ -6,7 +6,8 @@ Record image-affecting changes to `manager/`, `worker/`, `copaw/`, `hermes/`, `o
 
 **Bug Fixes**
 
-- **QwenPaw inline prompt compatibility**: Project Worker identity, SOUL, and AGENTS content through runtime desired state and apply it to the native QwenPaw workspace.
+- **QwenPaw inline prompt compatibility**: Project Worker identity, SOUL, and AGENTS content through runtime desired state and apply it to both the native QwenPaw workspace and the Worker root storage contract.
+- **Integration failure diagnostics**: Export AgentTeams container state and timestamped logs with CI artifacts, and stop the QwenPaw TeamHarness shard after startup failures instead of hiding the cause behind cascading timeouts.
 - **QwenPaw local startup readiness**: Select and propagate the QwenPaw Worker image across install backends, then wait for the runtime-owned `runtime/runtime.yaml` object before creating a local Docker Worker.
 - **Team Worker room boundary convergence**: Remove Manager again after standalone Worker infrastructure reconciliation restores regular Team Worker personal-room membership. ([b5b0add](https://github.com/agentscope-ai/AgentTeams/commit/b5b0add))
 - **Team Worker reference enforcement**: Keep referenced Worker CRs protected during direct deletion and reject Team API members whose required role is empty. ([d96f1ed](https://github.com/agentscope-ai/AgentTeams/commit/d96f1ed))
