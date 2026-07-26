@@ -129,6 +129,8 @@ grep -Fq 'AGENTTEAMS_INSTALL_PRELOADED_WORKER_IMAGES:-0' "${INSTALLER_FILE}" || 
     fail "controller, openclaw-base, and downstream image builds must restore GitHub Actions cache"
 [ "$(grep -Fc -- '--cache-to type=gha' "${WORKFLOW_FILE}")" -ge 3 ] || \
     fail "controller, openclaw-base, and downstream image builds must save GitHub Actions cache"
+[ "$(grep -Fc 'ignore-error=true' "${WORKFLOW_FILE}")" -ge 3 ] || \
+    fail "image builds must not fail when the optional GitHub Actions cache cannot be exported"
 [ "$(grep -Fc 'zstd -T0 -3' "${WORKFLOW_FILE}")" -ge 3 ] || \
     fail "all image archives must use fast multi-core zstd compression"
 if grep -Fq '| gzip > /tmp/agentteams-' "${WORKFLOW_FILE}"; then
