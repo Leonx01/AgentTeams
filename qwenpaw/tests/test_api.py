@@ -13,6 +13,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
         {"id": "default", "enabled": True},
         {"id": "QwenPaw_QA_Agent_0.2", "enabled": True},
     ]
+    toggle_conflicts = 0
 
     def log_message(self, _format, *_args):
         return
@@ -50,6 +51,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         payload = json.loads(self.rfile.read(length) or b"{}")
         if self.path == "/api/agents/QwenPaw_QA_Agent_0.2/toggle":
+            if type(self).toggle_conflicts:
+                type(self).toggle_conflicts -= 1
+                self._reply(409, {"detail": "agent is still starting"})
+                return
             for agent in type(self).agents:
                 if agent["id"] == "QwenPaw_QA_Agent_0.2":
                     agent["enabled"] = payload["enabled"]
@@ -65,6 +70,7 @@ def api_url():
         {"id": "default", "enabled": True},
         {"id": "QwenPaw_QA_Agent_0.2", "enabled": True},
     ]
+    _ApiHandler.toggle_conflicts = 0
     server = ThreadingHTTPServer(("127.0.0.1", 0), _ApiHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -101,3 +107,16 @@ def test_disable_agent_if_present_uses_api_and_reads_back(api_url):
     assert client.disable_agent_if_present("QwenPaw_QA_Agent_0.2") is True
     assert _ApiHandler.agents[1]["enabled"] is False
     assert client.disable_agent_if_present("missing") is False
+
+
+def test_disable_agent_retries_startup_conflict(api_url):
+    client = QwenPawApiClient(api_url)
+    _ApiHandler.toggle_conflicts = 2
+
+    assert client.disable_agent_if_present(
+        "QwenPaw_QA_Agent_0.2",
+        retries=2,
+        retry_delay=0,
+    ) is True
+    assert _ApiHandler.toggle_conflicts == 0
+    assert _ApiHandler.agents[1]["enabled"] is False

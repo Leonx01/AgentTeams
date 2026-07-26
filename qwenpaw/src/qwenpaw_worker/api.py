@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Iterable
 import urllib.error
 import urllib.request
@@ -222,13 +223,30 @@ class QwenPawApiClient:
             )
         return actual
 
-    def disable_agent_if_present(self, agent_id: str) -> bool:
+    def disable_agent_if_present(
+        self,
+        agent_id: str,
+        *,
+        retries: int = 120,
+        retry_delay: float = 1.0,
+    ) -> bool:
         agents = self._request("GET", "/api/agents").get("agents") or []
         current = next((agent for agent in agents if agent.get("id") == agent_id), None)
         if current is None:
             return False
         if current.get("enabled", True):
-            self._request("PATCH", f"/api/agents/{agent_id}/toggle", {"enabled": False})
+            for attempt in range(retries + 1):
+                try:
+                    self._request(
+                        "PATCH",
+                        f"/api/agents/{agent_id}/toggle",
+                        {"enabled": False},
+                    )
+                    break
+                except QwenPawApiError as exc:
+                    if "HTTP 409" not in str(exc) or attempt == retries:
+                        raise
+                    time.sleep(retry_delay)
         agents = self._request("GET", "/api/agents").get("agents") or []
         actual = next((agent for agent in agents if agent.get("id") == agent_id), None)
         if actual is None or actual.get("enabled", True):
