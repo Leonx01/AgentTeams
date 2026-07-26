@@ -125,5 +125,9 @@ grep -Fq 'AGENTTEAMS_INSTALL_PRELOADED_WORKER_IMAGES:-0' "${INSTALLER_FILE}" || 
     fail "installer does not support preloaded Worker image mode"
 [ "$(grep -Fc 'compression-level: 0' "${WORKFLOW_FILE}")" -ge 3 ] || \
     fail "all image artifacts must disable redundant ZIP compression"
+[ "$(grep -Fc -- '--cache-from type=gha' "${WORKFLOW_FILE}")" -ge 3 ] || \
+    fail "controller, openclaw-base, and downstream image builds must restore GitHub Actions cache"
+[ "$(grep -Fc -- '--cache-to type=gha' "${WORKFLOW_FILE}")" -ge 3 ] || \
+    fail "controller, openclaw-base, and downstream image builds must save GitHub Actions cache"
 
 echo "Integration coverage matrix checks passed."
