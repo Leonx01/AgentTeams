@@ -101,7 +101,7 @@ assert_contains() {
     local needle="$2"
     local message="${3:-assert_contains}"
 
-    if echo "${haystack}" | grep -q "${needle}"; then
+    if grep -Fq -- "${needle}" <<< "${haystack}"; then
         log_pass "${message}"
     else
         log_fail "${message} (expected to contain: '${needle}')"
@@ -113,7 +113,7 @@ assert_contains_i() {
     local needle="$2"
     local message="${3:-assert_contains_i}"
 
-    if echo "${haystack}" | grep -qi "${needle}"; then
+    if grep -Fiq -- "${needle}" <<< "${haystack}"; then
         log_pass "${message}"
     else
         log_fail "${message} (expected to contain (case-insensitive): '${needle}')"

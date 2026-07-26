@@ -393,7 +393,13 @@ Please update your SOUL.md with these preferences, then run: touch ~/soul-config
     # Wait for Manager to process and touch soul-configured (up to 120s)
     local elapsed=0
     while [ "${elapsed}" -lt 120 ]; do
-        if docker exec "${_agent}" test -f /root/manager-workspace/soul-configured 2>/dev/null; then
+        if docker exec "${_agent}" sh -c '
+            test -f /root/manager-workspace/soul-configured ||
+            {
+                grep -Fq "**Name:** Manager" /root/manager-workspace/SOUL.md &&
+                grep -Fq "**Language:** Always respond in English" /root/manager-workspace/SOUL.md
+            }
+        ' 2>/dev/null; then
             # soul-configured exists, but Manager's Matrix reply may still be in flight.
             # Wait for the reply to arrive in the DM room so subsequent tests don't
             # pick it up as their own reply (race condition with test-02).

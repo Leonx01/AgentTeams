@@ -93,41 +93,70 @@ wait_for_manager_agent_ready 300 "${DM_ROOM}" "${ADMIN_TOKEN}" || {
     exit 1
 }
 
+log_section "Setup: Provision Collaboration Workers"
+
+TEST_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-openclaw}"
+WORKER_CREATE_DIR=$(mktemp -d)
+WORKER_CREATE_PIDS=()
+WORKER_CREATE_NAMES=()
+
+for w in alice bob charlie; do
+    if exec_in_agent agt get workers "${w}" -o json >/dev/null 2>&1; then
+        log_info "Reusing existing Worker: ${w}"
+        continue
+    fi
+
+    (
+        exec_in_agent agt create worker \
+            --name "${w}" \
+            --identity "Developer working on a shared git repo using git-delegation workflows" \
+            --skills github-operations,git-delegation \
+            --runtime "${TEST_WORKER_RUNTIME}" \
+            --no-wait
+    ) >"${WORKER_CREATE_DIR}/${w}.log" 2>&1 &
+    WORKER_CREATE_PIDS+=("$!")
+    WORKER_CREATE_NAMES+=("${w}")
+done
+
+for i in "${!WORKER_CREATE_PIDS[@]}"; do
+    if wait "${WORKER_CREATE_PIDS[$i]}"; then
+        log_pass "Worker ${WORKER_CREATE_NAMES[$i]} creation accepted"
+    else
+        log_fail "Worker ${WORKER_CREATE_NAMES[$i]} creation failed: $(cat "${WORKER_CREATE_DIR}/${WORKER_CREATE_NAMES[$i]}.log")"
+    fi
+done
+rm -rf "${WORKER_CREATE_DIR}"
+
+for w in alice bob charlie; do
+    if wait_worker_provisioned "${w}" 120 &&
+        wait_for_worker_container "${w}" 120; then
+        ACTUAL_RUNTIME=$(exec_in_agent agt get workers "${w}" -o json 2>/dev/null | jq -r '.runtime // empty')
+        assert_eq "${TEST_WORKER_RUNTIME}" "${ACTUAL_RUNTIME}" \
+            "Worker ${w} uses the shard runtime"
+    else
+        log_fail "Worker ${w} was not ready for collaboration"
+    fi
+done
+
+if [ "${TESTS_FAILED}" -gt 0 ]; then
+    test_teardown "14-git-collab"
+    test_summary
+    exit 1
+fi
+
 log_section "Phase 1-4: Assign 4-Phase Git Collaboration Task"
 
-TASK_DESCRIPTION="Please coordinate a 4-phase git collaboration workflow to test non-linear multi-worker coordination.
+TASK_DESCRIPTION="Prepare the shared room for a bounded four-phase git collaboration test.
 
-Git repo URL (reachable from all worker containers): ${GIT_REPO_URL}
-The repo has a 'main' branch with an initial commit.
+Workers with usernames exactly 'alice', 'bob', and 'charlie' are already provisioned. Reuse them exactly as-is.
+Create a shared project room named EXACTLY '${PROJECT_NAME}' with alice, bob, charlie, and the human admin by using create-project.sh.
 
-⚠️ CRITICAL WORKER ASSIGNMENT TABLE — MUST FOLLOW EXACTLY, NO EXCEPTIONS:
+The integration coordinator will send the phase instructions in that room after verifying membership. Do not create task specs, clone the repository, or assign phases yourself. Stay in the room and observe the reports. After charlie reports PHASE4_DONE, post exactly 'GIT_COLLAB_COMPLETE ${TEST_RUN_ID}' and @mention the human admin."
 
-| Phase | Assigned Worker | Trigger condition                     |
-|-------|-----------------|---------------------------------------|
-| 1     | alice           | start immediately                     |
-| 2     | bob             | ONLY after alice reports PHASE1_DONE  |
-| 3     | alice           | ONLY after bob reports REVISION_NEEDED|
-| 4     | charlie         | ONLY after alice reports PHASE3_DONE  |
-
-DO NOT assign any phase to a different worker. DO NOT give alice phase 2 or phase 4. DO NOT give bob phase 1 or phase 3. DO NOT give charlie any phase except phase 4. Each phase must be done by the worker listed above and no one else.
-
-IMPORTANT: You MUST use the EXACT branch names and file paths specified below. Do not rename, substitute, or simplify them. The verification system checks these exact names.
-
-Before starting any phase:
-1. Ensure workers with usernames exactly 'alice', 'bob', and 'charlie' exist with the git-delegation skill. The username (container name) must match exactly — do not use variations like 'alice-dev' or 'bob-backend'. IMPORTANT: Create any missing workers IN PARALLEL (run all create-worker.sh calls concurrently) to save time — do NOT create them one by one sequentially. When creating any missing worker, use these exact values — do NOT ask me to confirm any of them:
-   - runtime: install default
-   - skills: github-operations, git-delegation
-   - SOUL/role: 'Developer working on a shared git repo using git-delegation workflows'
-   If a worker already exists, reuse it.
-2. Create a shared project room named EXACTLY '${PROJECT_NAME}' that includes alice, bob, charlie, and the human admin (use the create-project.sh script). All phase assignments and reports MUST happen in this project room — never in individual worker rooms.
-3. The temporary git:// URL is directly reachable from every Worker and needs no credentials. Tell Workers to run the listed git commands directly. Do NOT use git-request or git-delegation for this test.
-
-Run the phases strictly in order, waiting for each phase's report before starting the next.
-
-**Phase 1 — alice (and only alice)**:
+PHASE1_MESSAGE="@alice Phase 1 for collaboration ${TEST_RUN_ID}. Use these instructions directly; do not wait for file sync.
 - Clone ${GIT_REPO_URL}
-- Create branch named EXACTLY '${FEATURE_BRANCH}' from main (do not use any other name)
-- Create file at path EXACTLY 'doc/proposal.md' with this content:
+- Create branch '${FEATURE_BRANCH}' from main
+- Create doc/proposal.md with exactly:
   # Project Proposal
 
   ## Background
@@ -136,33 +165,28 @@ Run the phases strictly in order, waiting for each phase's report before startin
   ## Goals
   - Faster delivery
   - Better quality
-- Commit with message 'feat: add proposal' and push branch '${FEATURE_BRANCH}' to ${GIT_REPO_URL}
-- Report PHASE1_DONE
+- Commit 'feat: add proposal', push '${FEATURE_BRANCH}', and report PHASE1_DONE."
 
-**Phase 2 — bob and only bob** (assign to bob, NOT alice, only after alice reports PHASE1_DONE):
-- Clone ${GIT_REPO_URL}, check out branch '${FEATURE_BRANCH}', read doc/proposal.md
-- Create branch named EXACTLY '${REVIEW_BRANCH}' from '${FEATURE_BRANCH}' (do not use any other name)
-- Create file at path EXACTLY 'reviews/proposal-review.md' with this content:
+PHASE2_MESSAGE="@bob Phase 2 for collaboration ${TEST_RUN_ID}. Alice's branch is ready. Use these instructions directly; do not wait for file sync.
+- Clone ${GIT_REPO_URL} and check out '${FEATURE_BRANCH}'
+- Create '${REVIEW_BRANCH}' from '${FEATURE_BRANCH}'
+- Create reviews/proposal-review.md with exactly:
   # Review
 
   The proposal looks good. Please add a ## Summary section at the top that briefly describes the project in one sentence.
-- Commit 'review: request summary section' and push branch '${REVIEW_BRANCH}' to ${GIT_REPO_URL}
-- Report REVISION_NEEDED
+- Commit 'review: request summary section', push '${REVIEW_BRANCH}', and report REVISION_NEEDED."
 
-**Phase 3 — alice and only alice** (assign back to alice, NOT bob, only after bob reports REVISION_NEEDED):
-- Work on branch '${FEATURE_BRANCH}' (not a new branch)
-- Read bob's review file at path 'reviews/proposal-review.md' on branch '${REVIEW_BRANCH}'
-- Edit 'doc/proposal.md' on branch '${FEATURE_BRANCH}': add a '## Summary' section immediately after the '# Project Proposal' title line, with one sentence describing the project
-- Commit 'fix: add summary section per review' and push branch '${FEATURE_BRANCH}' to ${GIT_REPO_URL}
-- Report PHASE3_DONE
+PHASE3_MESSAGE="@alice Phase 3 for collaboration ${TEST_RUN_ID}. Bob's review branch is ready. Use these instructions directly; do not wait for file sync.
+- Work on '${FEATURE_BRANCH}'
+- Read reviews/proposal-review.md from '${REVIEW_BRANCH}'
+- Add a '## Summary' section immediately after the '# Project Proposal' title in doc/proposal.md, with one sentence describing the project
+- Commit 'fix: add summary section per review', push '${FEATURE_BRANCH}', and report PHASE3_DONE."
 
-**Phase 4 — charlie and only charlie** (assign to charlie, NOT alice or bob, only after alice reports PHASE3_DONE):
-- Clone ${GIT_REPO_URL}, create branch named EXACTLY '${TEST_BRANCH}' from '${FEATURE_BRANCH}' (do not use any other name)
-- Create file at path EXACTLY 'verify/checklist.md' confirming: (1) proposal.md has a Summary section, (2) Goals section is present, (3) review was addressed
-- Commit 'verify: proposal review checklist' and push branch '${TEST_BRANCH}' to ${GIT_REPO_URL}
-- Report PHASE4_DONE
-
-When all 4 phases are done, post exactly 'GIT_COLLAB_COMPLETE ${TEST_RUN_ID}' in the project room and @mention the human admin."
+PHASE4_MESSAGE="@charlie Phase 4 for collaboration ${TEST_RUN_ID}. Alice's revision is ready. Use these instructions directly; do not wait for file sync.
+- Clone ${GIT_REPO_URL}
+- Create '${TEST_BRANCH}' from '${FEATURE_BRANCH}'
+- Create verify/checklist.md confirming the Summary section, Goals section, and addressed review
+- Commit 'verify: proposal review checklist', push '${TEST_BRANCH}', and report PHASE4_DONE."
 
 # Snapshot before first LLM interaction
 METRICS_BASELINE=$(snapshot_baseline "alice" "bob" "charlie")
@@ -216,12 +240,38 @@ if [ -z "${PROJECT_ROOM}" ]; then
 fi
 log_info "Project room: ${PROJECT_ROOM}"
 
+MEMBERSHIP_PIDS=()
+MEMBERSHIP_NAMES=()
+for w in alice bob charlie; do
+    matrix_wait_for_user_joined "${MANAGER_TOKEN}" "${PROJECT_ROOM}" \
+        "@${w}:${TEST_MATRIX_DOMAIN}" 40 &
+    MEMBERSHIP_PIDS+=("$!")
+    MEMBERSHIP_NAMES+=("${w}")
+done
+for i in "${!MEMBERSHIP_PIDS[@]}"; do
+    w="${MEMBERSHIP_NAMES[$i]}"
+    if wait "${MEMBERSHIP_PIDS[$i]}"; then
+        log_pass "Worker ${w} joined the project room"
+    else
+        log_fail "Worker ${w} did not join the project room within 40s"
+    fi
+done
+if [ "${TESTS_FAILED}" -gt 0 ]; then
+    test_teardown "14-git-collab"
+    test_summary
+    exit 1
+fi
+
 PROJECT_BASELINE_EVENT=$(matrix_latest_reply_event "${MANAGER_TOKEN}" "${PROJECT_ROOM}" "@manager")
 
-log_info "Waiting for collaboration milestones (overall timeout: 600s, no-progress timeout: 120s)..."
-DEADLINE=$(( $(date +%s) + 600 ))
-STALL_DEADLINE=$(( $(date +%s) + 120 ))
-NEXT_NUDGE=$(( $(date +%s) + 45 ))
+matrix_send_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" "${PHASE1_MESSAGE}" >/dev/null
+PHASE2_SENT=0
+PHASE3_SENT=0
+PHASE4_SENT=0
+
+log_info "Waiting for collaboration milestones (overall timeout: 300s, no-activity timeout: 90s)..."
+DEADLINE=$(( $(date +%s) + 300 ))
+STALL_DEADLINE=$(( $(date +%s) + 90 ))
 LAST_STATE=""
 while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
     FEATURE_SHA=$(docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
@@ -235,7 +285,23 @@ while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
         FEATURE_COMMITS=$(docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
             rev-list --count "main..${FEATURE_BRANCH}" 2>/dev/null || echo 0)
     fi
-    STATE="${FEATURE_SHA}:${REVIEW_SHA}:${FEATURE_COMMITS}:${TEST_SHA}"
+    PROJECT_ACTIVITY=$(matrix_read_messages "${MANAGER_TOKEN}" "${PROJECT_ROOM}" 10 2>/dev/null | \
+        jq -r '[.chunk[] | select(.type == "m.room.message") | .event_id] | first // ""' \
+        2>/dev/null || true)
+    STATE="${FEATURE_SHA}:${REVIEW_SHA}:${FEATURE_COMMITS}:${TEST_SHA}:${PROJECT_ACTIVITY}"
+
+    if [ -n "${FEATURE_SHA}" ] && [ "${PHASE2_SENT}" -eq 0 ]; then
+        matrix_send_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" "${PHASE2_MESSAGE}" >/dev/null
+        PHASE2_SENT=1
+    fi
+    if [ -n "${REVIEW_SHA}" ] && [ "${PHASE3_SENT}" -eq 0 ]; then
+        matrix_send_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" "${PHASE3_MESSAGE}" >/dev/null
+        PHASE3_SENT=1
+    fi
+    if [ "${FEATURE_COMMITS}" -ge 2 ] && [ "${PHASE4_SENT}" -eq 0 ]; then
+        matrix_send_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" "${PHASE4_MESSAGE}" >/dev/null
+        PHASE4_SENT=1
+    fi
 
     if [ -n "${TEST_SHA}" ] && [ "${FEATURE_COMMITS}" -ge 2 ]; then
         break
@@ -243,25 +309,12 @@ while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
 
     NOW=$(date +%s)
     if [ "${STATE}" != "${LAST_STATE}" ]; then
-        log_info "Git collaboration advanced (feature commits=${FEATURE_COMMITS}, review=$([ -n "${REVIEW_SHA}" ] && echo yes || echo no), verify=$([ -n "${TEST_SHA}" ] && echo yes || echo no))"
+        log_info "Git or room activity advanced (feature commits=${FEATURE_COMMITS}, review=$([ -n "${REVIEW_SHA}" ] && echo yes || echo no), verify=$([ -n "${TEST_SHA}" ] && echo yes || echo no))"
         LAST_STATE="${STATE}"
-        STALL_DEADLINE=$((NOW + 120))
-        NEXT_NUDGE=$((NOW + 45))
+        STALL_DEADLINE=$((NOW + 90))
     elif [ "${NOW}" -ge "${STALL_DEADLINE}" ]; then
-        log_fail "Git collaboration made no branch progress for 120s"
+        log_fail "Git collaboration produced no room activity or branch progress for 90s"
         break
-    elif [ "${NOW}" -ge "${NEXT_NUDGE}" ]; then
-        if [ -z "${FEATURE_SHA}" ]; then
-            NUDGE="Continue git collaboration ${TEST_RUN_ID}: explicitly @mention Alice and remind her to clone ${GIT_REPO_URL} directly (no git-request) and push ${FEATURE_BRANCH}."
-        elif [ -z "${REVIEW_SHA}" ]; then
-            NUDGE="Continue git collaboration ${TEST_RUN_ID}: Phase 1 is pushed; explicitly @mention Bob with Phase 2 and require ${REVIEW_BRANCH}."
-        elif [ "${FEATURE_COMMITS}" -lt 2 ]; then
-            NUDGE="Continue git collaboration ${TEST_RUN_ID}: Bob's review is pushed; explicitly @mention Alice with Phase 3 and require the second commit on ${FEATURE_BRANCH}."
-        else
-            NUDGE="Continue git collaboration ${TEST_RUN_ID}: Alice's revision is pushed; explicitly @mention Charlie with Phase 4 and require ${TEST_BRANCH}."
-        fi
-        matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" "${NUDGE}" >/dev/null
-        NEXT_NUDGE=$((NOW + 45))
     fi
     sleep 5
 done

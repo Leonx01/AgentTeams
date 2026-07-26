@@ -235,6 +235,10 @@ fi
 log_section "Verify Canonical Team Leader Skill Guidance"
 
 LEADER_HOME="/root/agentteams-fs/agents/${TEST_LEADER}"
+# Team Active can precede the final leader-skill mirror by a few seconds.
+# Read the canonical assertions only after the newest communication rules land.
+wait_agent_file_contains "${TEST_LEADER}" "skills/communication/SKILL.md" \
+    "An assignment intent sentence is not an assignment" 30 || true
 PROJECT_SKILL=$(exec_in_manager mc cat "${STORAGE_PREFIX}/agents/${TEST_LEADER}/skills/project-management/SKILL.md" 2>/dev/null)
 TASK_SKILL=$(exec_in_manager mc cat "${STORAGE_PREFIX}/agents/${TEST_LEADER}/skills/task-management/SKILL.md" 2>/dev/null)
 COMMUNICATION_SKILL=$(exec_in_manager mc cat "${STORAGE_PREFIX}/agents/${TEST_LEADER}/skills/communication/SKILL.md" 2>/dev/null)
@@ -359,16 +363,16 @@ log_info "Task sent to Leader via Leader DM. Monitoring rooms..."
 # all, keep a short 120s ceiling for startup jitter.
 TEAM_ROOM_ENC=$(echo "${TEAM_ROOM}" | sed 's/!/%21/g')
 LEADER_DM_ENC=$(echo "${LEADER_DM}" | sed 's/!/%21/g')
-MAX_COORDINATION_POLLS="${MAX_COORDINATION_POLLS:-4}"
-MAX_DM_ONLY_POLLS="${MAX_DM_ONLY_POLLS:-1}"
+COORDINATION_POLL_SECONDS="${COORDINATION_POLL_SECONDS:-10}"
+MAX_COORDINATION_POLLS="${MAX_COORDINATION_POLLS:-12}"
 
 LEADER_RESPONDED=false
 TEAM_COORDINATED=false
 RUNTIME_ERROR=false
-DM_ONLY_POLLS=0
+CORRECTION_SENT=false
 for i in $(seq 1 "${MAX_COORDINATION_POLLS}"); do
-    sleep 30
-    log_info "Polling rooms... (${i}/${MAX_COORDINATION_POLLS}, elapsed: $((i*30))s)"
+    sleep "${COORDINATION_POLL_SECONDS}"
+    log_info "Polling rooms... (${i}/${MAX_COORDINATION_POLLS}, elapsed: $((i*COORDINATION_POLL_SECONDS))s)"
 
     # Check Team Room for Leader messages
     TEAM_MSGS=$(exec_in_manager bash -c '
@@ -410,8 +414,14 @@ for i in $(seq 1 "${MAX_COORDINATION_POLLS}"); do
     fi
 
     if [ "${LEADER_RESPONDED}" = "true" ] && [ "${TEAM_COORDINATED}" != "true" ]; then
-        DM_ONLY_POLLS=$((DM_ONLY_POLLS + 1))
-        if [ "${DM_ONLY_POLLS}" -ge "${MAX_DM_ONLY_POLLS}" ]; then
+        if [ "${CORRECTION_SENT}" = "false" ]; then
+            log_info "Leader replied with assignment intent only; requesting one immediate message-tool retry"
+            matrix_send_message "${ADMIN_LOGIN_TOKEN}" "${LEADER_DM}" \
+                "Your previous reply only described an assignment. Do not reply in Leader DM. Immediately call the message tool with target room:${TEAM_ROOM}, visibly @mention ${W1_MATRIX_ID}, and send the concrete API-design task now." \
+                >/dev/null
+            CORRECTION_SENT=true
+            LEADER_RESPONDED=false
+        else
             log_info "Leader is replying in Leader DM but has not posted a Team Room assignment; failing fast"
             break
         fi

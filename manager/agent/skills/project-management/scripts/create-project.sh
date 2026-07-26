@@ -173,6 +173,7 @@ _worker_auto_join() {
     local worker="$1"
     local room_id="$2"
     local creds_file="/data/worker-creds/${worker}.env"
+    local deadline=$((SECONDS + 30))
     local worker_token=""
     local room_enc=""
     local WORKER_PASSWORD=""
@@ -182,41 +183,65 @@ _worker_auto_join() {
         return 0
     fi
 
-    if [ -f "${creds_file}" ]; then
-        # shellcheck disable=SC1090
-        source "${creds_file}"
-    fi
-
-    if [ -z "${WORKER_PASSWORD}" ]; then
-        WORKER_PASSWORD=$(mc cat "${AGENTTEAMS_STORAGE_PREFIX}/agents/${worker}/credentials/matrix/password" 2>/dev/null || true)
-    fi
-    if [ -z "${WORKER_PASSWORD}" ] && [ -f "/root/agentteams-fs/agents/${worker}/credentials/matrix/password" ]; then
-        WORKER_PASSWORD=$(cat "/root/agentteams-fs/agents/${worker}/credentials/matrix/password" 2>/dev/null || true)
-    fi
-
-    if [ -n "${WORKER_PASSWORD}" ]; then
-        worker_token=$(curl -sf -X POST ${AGENTTEAMS_MATRIX_URL}/_matrix/client/v3/login \
-            -H 'Content-Type: application/json' \
-            -d '{"type":"m.login.password","identifier":{"type":"m.id.user","user":"'"${worker}"'"},"password":"'"${WORKER_PASSWORD}"'"}' \
-            2>/dev/null | jq -r '.access_token // empty')
-    elif [ -n "${WORKER_MATRIX_TOKEN}" ]; then
-        worker_token="${WORKER_MATRIX_TOKEN}"
-    fi
-
-    if [ -z "${worker_token}" ]; then
-        log "  WARNING: Could not obtain Matrix token for worker ${worker} — worker will need to accept project room invite"
-        return 0
-    fi
-
     room_enc=$(echo "${room_id}" | sed 's/!/%21/g')
-    if curl -sf -X POST "${AGENTTEAMS_MATRIX_URL}/_matrix/client/v3/rooms/${room_enc}/join" \
-        -H "Authorization: Bearer ${worker_token}" \
-        -H 'Content-Type: application/json' \
-        -d '{}' > /dev/null 2>&1; then
-        log "  Worker ${worker} auto-joined project room"
-    else
-        log "  WARNING: Worker ${worker} failed to auto-join project room"
-    fi
+    while [ "${SECONDS}" -lt "${deadline}" ]; do
+        WORKER_PASSWORD=""
+        WORKER_MATRIX_TOKEN=""
+        worker_token=""
+
+        if [ -f "${creds_file}" ]; then
+            # shellcheck disable=SC1090
+            source "${creds_file}"
+        fi
+
+        if [ -n "${WORKER_MATRIX_TOKEN}" ]; then
+            worker_token="${WORKER_MATRIX_TOKEN}"
+        fi
+        if [ -z "${WORKER_PASSWORD}" ]; then
+            WORKER_PASSWORD=$(mc cat "${AGENTTEAMS_STORAGE_PREFIX}/agents/${worker}/credentials/matrix/password" 2>/dev/null || true)
+        fi
+        if [ -z "${WORKER_PASSWORD}" ] && [ -f "/root/agentteams-fs/agents/${worker}/credentials/matrix/password" ]; then
+            WORKER_PASSWORD=$(cat "/root/agentteams-fs/agents/${worker}/credentials/matrix/password" 2>/dev/null || true)
+        fi
+
+        if [ -n "${worker_token}" ] && \
+            curl -sf -X POST "${AGENTTEAMS_MATRIX_URL}/_matrix/client/v3/rooms/${room_enc}/join" \
+                -H "Authorization: Bearer ${worker_token}" \
+                -H 'Content-Type: application/json' \
+                -d '{}' > /dev/null 2>&1; then
+            log "  Worker ${worker} auto-joined project room"
+            return 0
+        fi
+
+        worker_token=""
+        if [ -n "${WORKER_PASSWORD}" ]; then
+            worker_token=$(curl -sf -X POST ${AGENTTEAMS_MATRIX_URL}/_matrix/client/v3/login \
+                -H 'Content-Type: application/json' \
+                -d '{"type":"m.login.password","identifier":{"type":"m.id.user","user":"'"${worker}"'"},"password":"'"${WORKER_PASSWORD}"'"}' \
+                2>/dev/null | jq -r '.access_token // empty')
+        fi
+        if [ -n "${worker_token}" ] && \
+            curl -sf -X POST "${AGENTTEAMS_MATRIX_URL}/_matrix/client/v3/rooms/${room_enc}/join" \
+                -H "Authorization: Bearer ${worker_token}" \
+                -H 'Content-Type: application/json' \
+                -d '{}' > /dev/null 2>&1; then
+            log "  Worker ${worker} auto-joined project room"
+            return 0
+        fi
+
+        if curl -sf "${AGENTTEAMS_MATRIX_URL}/_matrix/client/v3/rooms/${room_enc}/members" \
+                -H "Authorization: Bearer ${MANAGER_MATRIX_TOKEN}" 2>/dev/null |
+            jq -e --arg user "@${worker}:${MATRIX_DOMAIN}" \
+                '.chunk[] | select(.state_key == $user and .content.membership == "join")' \
+                >/dev/null 2>&1; then
+            log "  Worker ${worker} joined project room"
+            return 0
+        fi
+        sleep 2
+    done
+
+    log "  ERROR: Worker ${worker} failed to auto-join project room within 30s"
+    return 1
 }
 
 _patch_manager_project_room_config() {
@@ -261,11 +286,25 @@ _patch_copaw_project_room_config() {
     mv /tmp/project-copaw-agent.json "${agent_json}"
 }
 
+WORKER_JOIN_PIDS=()
+WORKER_JOIN_NAMES=()
 for worker in "${WORKER_ARR[@]}"; do
     worker=$(echo "${worker}" | tr -d ' ')
     [ -z "${worker}" ] && continue
-    _worker_auto_join "${worker}" "${ROOM_ID}"
+    _worker_auto_join "${worker}" "${ROOM_ID}" &
+    WORKER_JOIN_PIDS+=("$!")
+    WORKER_JOIN_NAMES+=("${worker}")
 done
+
+FAILED_WORKER_JOINS=()
+for index in "${!WORKER_JOIN_PIDS[@]}"; do
+    if ! wait "${WORKER_JOIN_PIDS[$index]}"; then
+        FAILED_WORKER_JOINS+=("${WORKER_JOIN_NAMES[$index]}")
+    fi
+done
+if [ "${#FAILED_WORKER_JOINS[@]}" -gt 0 ]; then
+    _fail "Failed to auto-join Workers to project room: ${FAILED_WORKER_JOINS[*]}"
+fi
 
 # ============================================================
 # Step 3: Add Workers to Manager's groupAllowFrom

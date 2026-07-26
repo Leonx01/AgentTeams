@@ -34,6 +34,7 @@ _TEAM_LEADER_WORKER_ASSIGNMENT_RE = re.compile(
     r"task\s+assigned|"
     r"assigned\s+task|"
     r"you\s+are\s+assigned|"
+    r"you\s+have\s+a\s+new\s+task|"
     r"please\s+(?:design|implement|write|test|build|handle|review|create|investigate|work)|"
     r"start\s+(?:by\s+)?(?:designing|implementing|writing|testing|building|handling|reviewing|creating|investigating)"
     r")\b",

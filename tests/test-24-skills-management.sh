@@ -84,11 +84,16 @@ else
     log_fail "Worker CR missing 'github-operations' (got: ${INITIAL_SKILLS})"
 fi
 
-# Built-in baseline skill should be present in MinIO regardless of --skills
-if minio_file_exists "agents/${TEST_WORKER}/skills/file-sync/SKILL.md"; then
-    log_pass "Built-in skill 'file-sync' present in MinIO"
+# Built-in baseline skill should be present in MinIO regardless of --skills.
+# CoPaw exposes the equivalent storage workflow as file-sharing.
+case "${TEST_WORKER_RUNTIME}" in
+    copaw) BUILTIN_SKILL="file-sharing" ;;
+    *) BUILTIN_SKILL="file-sync" ;;
+esac
+if minio_wait_for_file "agents/${TEST_WORKER}/skills/${BUILTIN_SKILL}/SKILL.md" 30; then
+    log_pass "Built-in skill '${BUILTIN_SKILL}' present in MinIO"
 else
-    log_fail "Built-in skill 'file-sync' missing in MinIO"
+    log_fail "Built-in skill '${BUILTIN_SKILL}' missing in MinIO after 30s"
 fi
 
 if minio_file_exists "agents/${TEST_WORKER}/skills/github-operations/SKILL.md"; then

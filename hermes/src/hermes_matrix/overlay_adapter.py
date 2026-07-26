@@ -17,8 +17,10 @@ from __future__ import annotations
 import logging
 import os
 import types
+from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
+from mautrix.client.dispatcher import MembershipEventDispatcher
 from gateway.config import PlatformConfig
 from gateway.platforms._matrix_native import MatrixAdapter as _NativeMatrixAdapter
 
@@ -103,8 +105,18 @@ class MatrixAdapter(_NativeMatrixAdapter):
     async def connect(self) -> bool:
         ok = await super().connect()
         if ok and self._client is not None:
+            self._client.add_dispatcher(MembershipEventDispatcher)
+            await self._join_pending_invites()
             self._wrap_send_message_event()
         return ok
+
+    async def _join_pending_invites(self) -> None:
+        """Accept invites already present before mautrix dispatch was enabled."""
+        sync_data = await self._client.sync(timeout=0, full_state=True)
+        if not isinstance(sync_data, dict):
+            return
+        for room_id in sync_data.get("rooms", {}).get("invite", {}):
+            await self._on_invite(SimpleNamespace(room_id=room_id))
 
     def _wrap_send_message_event(self) -> None:
         """Inject MSC3952 ``m.mentions`` into every outgoing Matrix event."""

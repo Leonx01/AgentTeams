@@ -129,6 +129,8 @@ jobs:
           bash tests/check-matrix-wait-helpers.sh
           bash tests/check-agent-metrics-runtime.sh
           bash tests/check-worker-config-sync.sh
+          bash tests/check-test-helpers.sh
+          bash tests/check-project-room-autojoin.sh
           bash -n tests/run-all-tests.sh tests/test-*.sh tests/lib/*.sh
 
   # Step 1a: Build the shared base image (agentteams-controller)

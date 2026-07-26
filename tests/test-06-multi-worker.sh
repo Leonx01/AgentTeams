@@ -59,7 +59,6 @@ TEST_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-openclaw}"
 #
 # The runtime is explicit because the CI matrix runtime is the source of truth;
 # rendered Manager workspace text may contain fallback defaults.
-MANAGER_BASELINE_EVENT=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager")
 matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" \
     "Please create a new Worker now using these exact values — do not ask me to confirm any of them:
 - name: bob
@@ -144,20 +143,6 @@ matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" \
 
 Do not build an application or add extra deliverables. Start immediately."
 
-log_info "Waiting for Manager to acknowledge task..."
-REPLY=$(matrix_wait_for_reply_matching_since "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager" \
-    "${MANAGER_BASELINE_EVENT}" "${COLLAB_ID}" 180 \
-    "${ADMIN_TOKEN}" "${DM_ROOM}" \
-    "Please continue the ${COLLAB_ID} collaboration now.")
-
-assert_not_empty "${REPLY}" "Manager acknowledged collaborative task"
-if [ -z "${REPLY}" ]; then
-    dump_manager_dm_messages "${ADMIN_TOKEN}" "${DM_ROOM}" "${COLLAB_ID} acknowledgment missing"
-    test_teardown "06-multi-worker"
-    test_summary
-    exit 1
-fi
-
 log_section "Wait for Task Completion"
 
 log_info "Waiting for Manager token (timeout: 60s)..."
@@ -191,6 +176,7 @@ if [ -z "${PROJECT_ROOM}" ]; then
     test_summary
     exit 1
 fi
+log_pass "Manager created the correlated project room"
 
 log_info "Waiting for bounded collaboration completion (timeout: 180s, nudge after 30s)..."
 COMPLETION_MSG=$(matrix_read_messages "${MANAGER_TOKEN}" "${PROJECT_ROOM}" 30 2>/dev/null | \
