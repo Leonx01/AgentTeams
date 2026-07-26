@@ -59,6 +59,14 @@ _ver_lt() {
     [ "$1" = "$2" ] && return 1
     [ "$(printf '%s\n%s' "$1" "$2" | sort -V | head -1)" = "$1" ]
 }
+
+_use_legacy_image_env() {
+    if [ "$1" = "latest" ]; then
+        _ver_lt "${AGENTTEAMS_KNOWN_STABLE_VERSION}" "v1.2.0"
+    else
+        _ver_lt "$1" "v1.2.0"
+    fi
+}
 AGENTTEAMS_NON_INTERACTIVE="${AGENTTEAMS_NON_INTERACTIVE:-0}"
 AGENTTEAMS_MOUNT_SOCKET="${AGENTTEAMS_MOUNT_SOCKET:-1}"
 AGENTTEAMS_DOCKER_PROXY="${AGENTTEAMS_DOCKER_PROXY:-1}"
@@ -3499,6 +3507,61 @@ CREDEOF
         if [ -n "${AGENTTEAMS_CMS_WORKSPACE:-}" ]; then
             _ctrl_env_args+=(-e "AGENTTEAMS_CMS_WORKSPACE=${AGENTTEAMS_CMS_WORKSPACE}")
         fi
+
+        # Begin pre-v1.2 image compatibility
+        # v1.1.x embedded images still read the former environment contract.
+        # Pass both contracts so the renamed installer can boot those images.
+        if _use_legacy_image_env "${AGENTTEAMS_VERSION}"; then
+            _ctrl_env_args+=(
+                -e "HICLAW_ADMIN_USER=${AGENTTEAMS_ADMIN_USER}"
+                -e "HICLAW_ADMIN_PASSWORD=${AGENTTEAMS_ADMIN_PASSWORD}"
+                -e "HICLAW_MANAGER_PASSWORD=${AGENTTEAMS_MANAGER_PASSWORD}"
+                -e "HICLAW_REGISTRATION_TOKEN=${AGENTTEAMS_REGISTRATION_TOKEN}"
+                -e "HICLAW_MINIO_USER=${AGENTTEAMS_MINIO_USER}"
+                -e "HICLAW_MINIO_PASSWORD=${AGENTTEAMS_MINIO_PASSWORD}"
+                -e "HICLAW_LLM_PROVIDER=${AGENTTEAMS_LLM_PROVIDER}"
+                -e "HICLAW_LLM_API_KEY=${AGENTTEAMS_LLM_API_KEY}"
+                -e "HICLAW_DEFAULT_MODEL=${AGENTTEAMS_DEFAULT_MODEL}"
+                -e "HICLAW_MANAGER_GATEWAY_KEY=${AGENTTEAMS_MANAGER_GATEWAY_KEY}"
+                -e "HICLAW_MANAGER_RUNTIME=${AGENTTEAMS_MANAGER_RUNTIME:-copaw}"
+                -e "HICLAW_MANAGER_IMAGE=$([ "${AGENTTEAMS_MANAGER_RUNTIME}" = "copaw" ] && echo "${MANAGER_COPAW_IMAGE}" || echo "${MANAGER_IMAGE}")"
+                -e "HICLAW_DEFAULT_WORKER_RUNTIME=${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-copaw}"
+                -e "HICLAW_WORKER_IMAGE=${WORKER_IMAGE}"
+                -e "HICLAW_COPAW_WORKER_IMAGE=${COPAW_WORKER_IMAGE}"
+                -e "HICLAW_HERMES_WORKER_IMAGE=${HERMES_WORKER_IMAGE}"
+                -e "HICLAW_MATRIX_DOMAIN=${_matrix_domain}"
+                -e "HICLAW_ELEMENT_HOMESERVER_URL=http://127.0.0.1:${AGENTTEAMS_PORT_GATEWAY}"
+                -e "HICLAW_MATRIX_URL=http://127.0.0.1:6167"
+                -e "HICLAW_MATRIX_E2EE=${AGENTTEAMS_MATRIX_E2EE:-0}"
+                -e "HICLAW_MINIO_ENDPOINT=http://127.0.0.1:9000"
+                -e "HICLAW_MINIO_BUCKET=agentteams-storage"
+                -e "HICLAW_FS_BUCKET=agentteams-storage"
+                -e "HICLAW_STORAGE_PREFIX=agentteams/agentteams-storage"
+                -e "HICLAW_FS_ENDPOINT=http://127.0.0.1:9000"
+                -e "HICLAW_AI_GATEWAY_URL=http://${_aigw_domain}"
+                -e "HICLAW_CONTROLLER_URL=http://agentteams-controller:8090"
+                -e "HICLAW_DOCKER_NETWORK=agentteams-net"
+                -e "HICLAW_WORKSPACE_DIR=${AGENTTEAMS_WORKSPACE_DIR}"
+                -e "HICLAW_HOST_SHARE_DIR=${AGENTTEAMS_HOST_SHARE_DIR}"
+                -e "HICLAW_MANAGER_ENABLED=true"
+                -e "HICLAW_PORT_MANAGER_CONSOLE=${AGENTTEAMS_PORT_MANAGER_CONSOLE:-18888}"
+                -e "HICLAW_RESOURCE_PREFIX=agentteams-"
+                -e "HICLAW_CMS_TRACES_ENABLED=${AGENTTEAMS_CMS_TRACES_ENABLED:-false}"
+                -e "HICLAW_CMS_SERVICE_NAME=${AGENTTEAMS_CMS_SERVICE_NAME:-agentteams-manager}"
+                -e "HICLAW_CMS_METRICS_ENABLED=${AGENTTEAMS_CMS_METRICS_ENABLED:-false}"
+            )
+            [ "${AGENTTEAMS_YOLO:-}" = "1" ] && _ctrl_env_args+=(-e "HICLAW_YOLO=1")
+            [ "${AGENTTEAMS_MATRIX_DEBUG:-}" = "1" ] && _ctrl_env_args+=(-e "HICLAW_MATRIX_DEBUG=1")
+            [ -n "${AGENTTEAMS_GITHUB_TOKEN:-}" ] && _ctrl_env_args+=(-e "HICLAW_GITHUB_TOKEN=${AGENTTEAMS_GITHUB_TOKEN}")
+            [ -n "${AGENTTEAMS_EMBEDDING_MODEL:-}" ] && _ctrl_env_args+=(-e "HICLAW_EMBEDDING_MODEL=${AGENTTEAMS_EMBEDDING_MODEL}")
+            [ -n "${AGENTTEAMS_OPENAI_BASE_URL:-}" ] && _ctrl_env_args+=(-e "HICLAW_OPENAI_BASE_URL=${AGENTTEAMS_OPENAI_BASE_URL}")
+            [ -n "${AGENTTEAMS_LANGUAGE:-}" ] && _ctrl_env_args+=(-e "HICLAW_LANGUAGE=${AGENTTEAMS_LANGUAGE}")
+            [ -n "${AGENTTEAMS_CMS_ENDPOINT:-}" ] && _ctrl_env_args+=(-e "HICLAW_CMS_ENDPOINT=${AGENTTEAMS_CMS_ENDPOINT}")
+            [ -n "${AGENTTEAMS_CMS_LICENSE_KEY:-}" ] && _ctrl_env_args+=(-e "HICLAW_CMS_LICENSE_KEY=${AGENTTEAMS_CMS_LICENSE_KEY}")
+            [ -n "${AGENTTEAMS_CMS_PROJECT:-}" ] && _ctrl_env_args+=(-e "HICLAW_CMS_PROJECT=${AGENTTEAMS_CMS_PROJECT}")
+            [ -n "${AGENTTEAMS_CMS_WORKSPACE:-}" ] && _ctrl_env_args+=(-e "HICLAW_CMS_WORKSPACE=${AGENTTEAMS_CMS_WORKSPACE}")
+        fi
+        # End pre-v1.2 image compatibility
 
         # shellcheck disable=SC2086
         ${DOCKER_CMD} run -d \
