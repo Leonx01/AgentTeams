@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
+from qwenpaw_worker.api import QwenPawApiClient
+
 import yaml
 
 from qwenpaw_worker.config import WorkerConfig
@@ -900,13 +902,11 @@ class AgentPackageManager:
         if config_dir.is_dir():
             self._copy_config_to_workspace(config_dir)
         self._clear_missing_package_prompt_files(package_root)
-
-        self._apply_package_mcp_config(package_root, previous_root)
+        self._package_mcp_clients(package_root)  # validate before committing the package
 
         skills_dir = package_root / "skills"
         if skills_dir.is_dir():
-            skill_names = self._copy_skills_to_workspace(skills_dir)
-            self._reconcile_workspace_skills(skill_names)
+            self._copy_skills_to_workspace(skills_dir)
 
     def _package_content_root(self, package_dir: Path) -> Path:
         if self._looks_like_agent_package(package_dir):
@@ -969,8 +969,6 @@ class AgentPackageManager:
         if self.workspace_dir is None:
             return []
         package_root = self._package_content_root(package_dir)
-        if self._package_mcp_clients(package_root):
-            return [self.workspace_dir / "agent.json"]
         return []
 
     def _snapshot_workspace(
@@ -1109,29 +1107,6 @@ class AgentPackageManager:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("", encoding="utf-8")
 
-    def _apply_package_mcp_config(self, package_root: Path, previous_package_root: Optional[Path]) -> None:
-        current_clients = self._package_mcp_clients(package_root)
-        previous_clients = self._package_mcp_clients(previous_package_root)
-        if not current_clients and not previous_clients:
-            return
-        try:
-            from qwenpaw.config.config import MCPClientConfig, MCPConfig, load_agent_config, save_agent_config
-        except ImportError:
-            logger.info("qwenpaw package unavailable component=update step=apply_package_mcp action=skip")
-            return
-
-        agent_config = load_agent_config(DEFAULT_AGENT_ID)
-        if getattr(agent_config, "mcp", None) is None:
-            agent_config.mcp = MCPConfig()
-        clients = dict(getattr(agent_config.mcp, "clients", None) or {})
-        for name in previous_clients:
-            if name not in current_clients:
-                clients.pop(name, None)
-        for name, payload in current_clients.items():
-            clients[name] = MCPClientConfig(**payload)
-        agent_config.mcp.clients = clients
-        save_agent_config(DEFAULT_AGENT_ID, agent_config)
-
     def _package_mcp_clients(self, package_root: Optional[Path]) -> Dict[str, Dict[str, Any]]:
         if package_root is None:
             return {}
@@ -1174,6 +1149,19 @@ class AgentPackageManager:
                 clients[client_name] = self._qwenpaw_mcp_client_payload(client_name, item)
         return clients
 
+    def package_mcp_clients(self, package_dir: Optional[Path]) -> Dict[str, Dict[str, Any]]:
+        if package_dir is None:
+            return {}
+        return self._package_mcp_clients(self._package_content_root(package_dir))
+
+    def package_skill_names(self, package_dir: Optional[Path]) -> List[str]:
+        if package_dir is None:
+            return []
+        skills_dir = self._package_content_root(package_dir) / "skills"
+        if not skills_dir.is_dir():
+            return []
+        return sorted(path.name for path in skills_dir.iterdir() if path.is_dir())
+
     def _qwenpaw_mcp_client_payload(self, name: str, item: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(item)
         payload.pop("id", None)
@@ -1191,6 +1179,8 @@ class AgentPackageManager:
             payload["transport"] = payload.pop("type")
         else:
             payload.pop("type", None)
+        if _string(payload.get("transport")).lower() == "http":
+            payload["transport"] = "streamable_http"
         payload = self._expand_mcp_workspace_placeholders(payload)
         self._ensure_mcp_stdio_workspace_env(payload)
         return payload
@@ -1254,41 +1244,6 @@ class AgentPackageManager:
             shutil.copytree(source, target)
         elif source.is_file():
             shutil.copy2(source, target)
-
-    def _reconcile_workspace_skills(self, skill_names: Optional[List[str]] = None) -> None:
-        if self.workspace_dir is None:
-            return
-        try:
-            from qwenpaw.agents.skill_system.registry import reconcile_workspace_manifest
-        except ImportError:
-            logger.info("qwenpaw package unavailable component=update step=reconcile_workspace_skills action=skip")
-            return
-        reconcile_workspace_manifest(self.workspace_dir)
-        self._enable_workspace_skills(skill_names or [])
-
-    def _enable_workspace_skills(self, skill_names: List[str]) -> None:
-        if self.workspace_dir is None or not skill_names:
-            return
-        manifest_path = self.workspace_dir / "skill.json"
-        if not manifest_path.exists():
-            return
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception:
-            logger.warning("workspace skill manifest is invalid component=update step=enable_workspace_skills action=skip")
-            return
-        skills = manifest.setdefault("skills", {})
-        changed = False
-        for skill_name in skill_names:
-            entry = skills.get(skill_name)
-            if isinstance(entry, dict) and entry.get("enabled") is not True:
-                entry["enabled"] = True
-                changed = True
-        if changed:
-            tmp = manifest_path.with_name(f".{manifest_path.name}.tmp")
-            tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(manifest_path)
-
 
 @dataclass(frozen=True)
 class ApplyResult:
@@ -1537,12 +1492,14 @@ class RuntimeUpdater:
         runtime_config_pull: Optional[Callable[[], None]] = None,
         model_runtime_sync: Optional[Callable[[MemberRuntimeConfig], None]] = None,
         team_context_renderer: Optional[Callable[[MemberRuntimeConfig], str]] = None,
+        api_client: Optional[QwenPawApiClient] = None,
     ) -> None:
         self.config = config
         self.adapter_apply = adapter_apply
         self.runtime_config_pull = runtime_config_pull
         self.model_runtime_sync = model_runtime_sync or QwenPawModelRuntimeSync(config.console_port)
         self.team_context_renderer = team_context_renderer
+        self.api_client = api_client
         self.package_manager = package_manager or AgentPackageManager(
             config.qwenpaw_working_dir / "agent-packages",
             workspace_dir=config.default_workspace_dir,
@@ -1609,6 +1566,8 @@ class RuntimeUpdater:
         self._apply_team_context_prompt(config)
 
         applied_package = self.package_manager.apply(config)
+        self._apply_package_mcp_servers(applied_package)
+        self._apply_package_skills(applied_package)
 
         adapter_applied = False
         if adapter_should_apply:
@@ -1783,25 +1742,8 @@ class RuntimeUpdater:
         model_name = _string(model.get("model") or model.get("name"))
         if not provider_id or not model_name:
             return
-        try:
-            from qwenpaw.config.config import ModelSlotConfig, load_agent_config, save_agent_config
-        except ImportError:
-            logger.info("qwenpaw package unavailable component=update step=apply_model action=skip")
-            return
-
-        agent_config = load_agent_config(DEFAULT_AGENT_ID)
-        agent_config.active_model = ModelSlotConfig(provider_id=provider_id, model=model_name)
-        save_agent_config(DEFAULT_AGENT_ID, agent_config)
-        self._apply_openai_compatible_provider(config, provider_id, model_name, ModelSlotConfig)
-
-    def _apply_openai_compatible_provider(
-        self,
-        config: MemberRuntimeConfig,
-        provider_id: str,
-        model_name: str,
-        model_slot_config_class: Any,
-    ) -> None:
-        model = config.model
+        if self.api_client is None:
+            raise RuntimeError("QwenPaw API client is required for model configuration")
         base_url = _string(
             model.get("baseUrl")
             or model.get("base_url")
@@ -1819,33 +1761,14 @@ class RuntimeUpdater:
         )
         if not api_key and api_key_env:
             api_key = _string(os.getenv(api_key_env))
-        if not base_url or not api_key:
-            return
-
-        try:
-            from qwenpaw.providers.provider import ModelInfo, ProviderInfo
-            from qwenpaw.providers.provider_manager import ProviderManager
-        except ImportError:
-            logger.info("qwenpaw provider package unavailable component=update step=apply_provider action=skip")
-            return
-
-        manager = ProviderManager.get_instance()
-        provider_data = ProviderInfo(
-            id=provider_id,
-            name=_string(model.get("providerName") or model.get("provider_name") or provider_id),
-            base_url=self._openai_compatible_base_url(base_url),
+        self.api_client.configure_active_model(
+            provider_id,
+            model_name,
+            base_url=self._openai_compatible_base_url(base_url) if base_url else "",
             api_key=api_key,
+            provider_name=_string(model.get("providerName") or model.get("provider_name") or provider_id),
             chat_model=_string(model.get("chatModel") or model.get("chat_model") or "OpenAIChatModel"),
-            models=[ModelInfo(id=model_name, name=model_name)],
-            is_custom=True,
-            support_model_discovery=False,
-            support_connection_check=False,
         )
-        provider = manager._provider_from_data(provider_data.model_dump())
-        manager.custom_providers[provider_id] = provider
-        manager.save_provider_config(provider_id, provider)
-        manager.active_model = model_slot_config_class(provider_id=provider_id, model=model_name)
-        manager.save_active_model(manager.active_model)
 
     def _openai_compatible_base_url(self, base_url: str) -> str:
         value = base_url.rstrip("/")
@@ -1855,15 +1778,73 @@ class RuntimeUpdater:
 
     def _apply_mcp_servers(self, config: MemberRuntimeConfig) -> None:
         servers = self._mcporter_servers(config)
-        legacy_path = self.config.default_workspace_dir / "mcporter-servers.json"
-        if legacy_path.exists():
-            legacy_path.unlink()
+        if self.api_client is None:
+            if servers:
+                raise RuntimeError("QwenPaw API client is required for MCP configuration")
+            return
+        existing = {str(item.get("key")): item for item in self.api_client.list_mcp()}
+        ownership_path = self.config.qwenpaw_working_dir / ".agentteams-managed-mcp.json"
+        try:
+            managed = set(json.loads(ownership_path.read_text(encoding="utf-8")))
+        except (FileNotFoundError, json.JSONDecodeError, TypeError):
+            managed = set()
+        for key in sorted((managed & existing.keys()) - servers.keys()):
+            self.api_client.delete_mcp(key)
+        for key, server in servers.items():
+            transport = _string(server.get("transport") or "http")
+            payload = {
+                "name": key,
+                "enabled": True,
+                "transport": "streamable_http" if transport in {"http", "streamable_http"} else transport,
+                "url": _string(server.get("url")),
+                "headers": dict(server.get("headers") or {}),
+                "command": _string(server.get("command")),
+                "args": list(server.get("args") or []),
+                "env": dict(server.get("env") or {}),
+                "cwd": _string(server.get("cwd")),
+            }
+            if key in existing:
+                self.api_client.update_mcp(key, payload)
+            else:
+                self.api_client.create_mcp(key, payload)
+        ownership_path.parent.mkdir(parents=True, exist_ok=True)
+        ownership_path.write_text(
+            json.dumps(sorted(servers), ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
 
-        path = self.config.default_workspace_dir / "config" / "mcporter.json"
-        payload = {"mcpServers": servers}
-        text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+    def _apply_package_mcp_servers(self, package_dir: Optional[Path]) -> None:
+        package_clients = getattr(self.package_manager, "package_mcp_clients", None)
+        servers = package_clients(package_dir) if callable(package_clients) else {}
+        if self.api_client is None:
+            if servers:
+                raise RuntimeError("QwenPaw API client is required for agent package MCP configuration")
+            return
+        existing = {str(item.get("key")): item for item in self.api_client.list_mcp()}
+        ownership_path = self.config.qwenpaw_working_dir / ".agentteams-managed-package-mcp.json"
+        try:
+            managed = set(json.loads(ownership_path.read_text(encoding="utf-8")))
+        except (FileNotFoundError, json.JSONDecodeError, TypeError):
+            managed = set()
+        for key in sorted((managed & existing.keys()) - servers.keys()):
+            self.api_client.delete_mcp(key)
+        for key, payload in servers.items():
+            payload = dict(payload)
+            payload.setdefault("name", key)
+            if key in existing:
+                self.api_client.update_mcp(key, payload)
+            else:
+                self.api_client.create_mcp(key, payload)
+        ownership_path.parent.mkdir(parents=True, exist_ok=True)
+        ownership_path.write_text(json.dumps(sorted(servers)) + "\n", encoding="utf-8")
+
+    def _apply_package_skills(self, package_dir: Optional[Path]) -> None:
+        if package_dir is None or self.api_client is None:
+            return
+        package_skills = getattr(self.package_manager, "package_skill_names", None)
+        skill_names = package_skills(package_dir) if callable(package_skills) else []
+        if skill_names:
+            self.api_client.refresh_and_enable_skills(skill_names)
 
     def _apply_channel_policy(self, config: MemberRuntimeConfig) -> None:
         group_allow, dm_allow, group_deny, dm_deny = self._matrix_policy_ids(config)
@@ -1886,25 +1867,16 @@ class RuntimeUpdater:
         desired = self._matrix_channel_desired_state(config)
         if desired is None:
             return
-        try:
-            from qwenpaw.config.config import load_agent_config, save_agent_config
-        except ImportError:
-            logger.info("qwenpaw package unavailable component=update step=apply_matrix_channel action=skip")
-            return
-
-        agent_config = load_agent_config(DEFAULT_AGENT_ID)
-        if getattr(agent_config, "channels", None) is None:
-            try:
-                from qwenpaw.config.config import ChannelConfig
-            except ImportError:
-                return
-            agent_config.channels = ChannelConfig()
-        matrix_config = getattr(agent_config.channels, "matrix", None)
-        if matrix_config is None:
-            return
-
-        changed = False
-        desired_fields = {
+        if self.api_client is None:
+            raise RuntimeError("QwenPaw API client is required for Matrix configuration")
+        groups: Dict[str, Any] = {}
+        self._ensure_require_mention_group(groups, "*")
+        room_id = desired["room_id"]
+        if room_id:
+            self._ensure_require_mention_group(groups, room_id)
+        self.api_client.put_channel(
+            "agentteams_matrix",
+            {
             "enabled": True,
             "homeserver": desired["homeserver"],
             "user_id": desired["user_id"],
@@ -1913,56 +1885,27 @@ class RuntimeUpdater:
             "encryption": _env_bool("AGENTTEAMS_MATRIX_E2EE"),
             "group_disabled": False,
             "dm_disabled": False,
-            "filter_tool_messages": False,
-            "filter_thinking": False,
-        }
-        for field, value in desired_fields.items():
-            if getattr(matrix_config, field, None) != value:
-                setattr(matrix_config, field, value)
-                changed = True
-
-        groups = dict(getattr(matrix_config, "groups", None) or {})
-        if self._ensure_require_mention_group(groups, "*"):
-            changed = True
-        room_id = desired["room_id"]
-        if room_id:
-            if self._ensure_require_mention_group(groups, room_id):
-                changed = True
-        if getattr(matrix_config, "groups", None) != groups:
-            matrix_config.groups = groups
-            changed = True
-
-        if changed:
-            save_agent_config(DEFAULT_AGENT_ID, agent_config)
+            "show_tool_calls": True,
+            "show_tool_results": True,
+            "show_thinking": True,
+            "groups": groups,
+            },
+            secret_fields={"access_token", "password"},
+        )
 
     def _apply_dingtalk_channel(self, config: MemberRuntimeConfig) -> None:
         desired = config.dingtalk_channel
         if desired is None:
             return
-        try:
-            from qwenpaw.config.config import load_agent_config, save_agent_config
-        except ImportError:
-            logger.info("qwenpaw package unavailable component=update step=apply_dingtalk_channel action=skip")
-            return
-
-        agent_config = load_agent_config(DEFAULT_AGENT_ID)
-        if getattr(agent_config, "channels", None) is None:
-            try:
-                from qwenpaw.config.config import ChannelConfig
-            except ImportError:
-                return
-            agent_config.channels = ChannelConfig()
-        dingtalk_config = getattr(agent_config.channels, "dingtalk", None)
-        if dingtalk_config is None:
-            return
-
-        changed = False
+        if self.api_client is None:
+            raise RuntimeError("QwenPaw API client is required for DingTalk configuration")
+        current = self.api_client.get_channel("dingtalk")
         if not _bool(desired.get("enabled")):
-            if getattr(dingtalk_config, "enabled", None) is not False:
-                dingtalk_config.enabled = False
-                changed = True
-            if changed:
-                save_agent_config(DEFAULT_AGENT_ID, agent_config)
+            self.api_client.put_channel(
+                "dingtalk",
+                {**current, "enabled": False},
+                secret_fields={"client_secret"},
+            )
             return
 
         streaming_enabled = _bool(desired.get("streaming_enabled"))
@@ -1974,8 +1917,9 @@ class RuntimeUpdater:
             "client_id": client_id,
             "client_secret": client_secret,
             "robot_code": robot_code,
-            "filter_thinking": _bool(desired.get("filter_thinking")),
-            "filter_tool_messages": _bool(desired.get("filter_tool_messages")),
+            "show_thinking": not _bool(desired.get("filter_thinking")),
+            "show_tool_calls": not _bool(desired.get("filter_tool_messages")),
+            "show_tool_results": not _bool(desired.get("filter_tool_messages")),
             "streaming_enabled": streaming_enabled,
         }
         if streaming_enabled:
@@ -1998,8 +1942,8 @@ class RuntimeUpdater:
                     f"{', '.join(missing)}"
                 )
             card_template_id = _string(desired.get("card_template_id"))
-            previous_message_type = _string(getattr(dingtalk_config, "message_type", ""))
-            previous_template_id = _string(getattr(dingtalk_config, "card_template_id", ""))
+            previous_message_type = _string(current.get("message_type"))
+            previous_template_id = _string(current.get("card_template_id"))
             if (
                 previous_message_type == "card"
                 and previous_template_id
@@ -2033,13 +1977,11 @@ class RuntimeUpdater:
                 )
             if "card_auto_layout" in desired:
                 desired_fields["card_auto_layout"] = _bool(desired.get("card_auto_layout"))
-        for field, value in desired_fields.items():
-            if getattr(dingtalk_config, field, None) != value:
-                setattr(dingtalk_config, field, value)
-                changed = True
-
-        if changed:
-            save_agent_config(DEFAULT_AGENT_ID, agent_config)
+        self.api_client.put_channel(
+            "dingtalk",
+            {**current, **desired_fields},
+            secret_fields={"client_secret"},
+        )
 
     def _matrix_channel_desired_state(self, config: MemberRuntimeConfig) -> Optional[Dict[str, str]]:
         homeserver = _string(
@@ -2206,55 +2148,23 @@ class RuntimeUpdater:
         return os.getenv(env_name, "") if env_name else ""
 
     def _apply_matrix_channel_access_flags(self, group_enabled: bool, dm_enabled: bool) -> None:
-        try:
-            from qwenpaw.config.config import load_agent_config, save_agent_config
-        except ImportError:
-            logger.info("qwenpaw package unavailable component=update step=apply_channel_access_flags action=skip")
-            return
-
-        agent_config = load_agent_config(DEFAULT_AGENT_ID)
-        if getattr(agent_config, "channels", None) is None:
-            try:
-                from qwenpaw.config.config import ChannelConfig
-            except ImportError:
-                return
-            agent_config.channels = ChannelConfig()
-        matrix_config = getattr(agent_config.channels, "matrix", None)
-        if matrix_config is None:
-            return
-        matrix_config.access_control_group = group_enabled
-        matrix_config.access_control_dm = dm_enabled
-        save_agent_config(DEFAULT_AGENT_ID, agent_config)
+        if self.api_client is None:
+            raise RuntimeError("QwenPaw API client is required for Matrix ACL configuration")
+        current = self.api_client.get_channel("agentteams_matrix")
+        self.api_client.put_channel(
+            "agentteams_matrix",
+            {
+                **current,
+                "access_control_group": group_enabled,
+                "access_control_dm": dm_enabled,
+            },
+            secret_fields={"access_token", "password"},
+        )
 
     def _write_matrix_access_control(self, whitelist: List[str], blacklist: List[str]) -> None:
-        try:
-            from qwenpaw.app.channels.access_control import get_access_control_store
-        except ImportError:
-            self._write_matrix_access_control_json(whitelist, blacklist)
-            return
-
-        store = get_access_control_store(self.config.default_workspace_dir)
-        store.set_whitelist("matrix", whitelist)
-        store.set_blacklist("matrix", blacklist)
-
-    def _write_matrix_access_control_json(self, whitelist: List[str], blacklist: List[str]) -> None:
-        path = self.config.default_workspace_dir / "access_control.json"
-        existing: Dict[str, Any] = {}
-        if path.exists():
-            try:
-                loaded = json.loads(path.read_text(encoding="utf-8"))
-                existing = loaded if isinstance(loaded, dict) else {}
-            except json.JSONDecodeError:
-                existing = {}
-        matrix = _section(existing, "matrix")
-        pending = matrix.get("pending")
-        existing["matrix"] = {
-            "whitelist": {value: "" for value in whitelist},
-            "blacklist": {value: "" for value in blacklist},
-            "pending": pending if isinstance(pending, list) else [],
-        }
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(existing, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        if self.api_client is None:
+            raise RuntimeError("QwenPaw API client is required for Matrix ACL configuration")
+        self.api_client.reconcile_acl("agentteams_matrix", whitelist, blacklist)
 
     def _dedupe(self, values: List[str]) -> List[str]:
         result = []

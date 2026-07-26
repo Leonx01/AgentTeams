@@ -1,11 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-AgentTeams overlay for QwenPaw MatrixChannel.
-
-The base implementation comes from QwenPaw. AgentTeams keeps a small overlay for
-runtime behavior that is not a TeamHarness concern: startup readiness, first
-sync stability, and Matrix mention compatibility.
-"""
+"""AgentTeams-owned Matrix channel for QwenPaw 2."""
 
 from __future__ import annotations
 
@@ -66,7 +60,7 @@ from nio.responses import (
     WhoamiResponse,
 )
 
-from agentscope_runtime.engine.schemas.agent_schemas import (
+from qwenpaw.schemas import (
     AudioContent,
     ContentType,
     FileContent,
@@ -77,14 +71,14 @@ from agentscope_runtime.engine.schemas.agent_schemas import (
     VideoContent,
 )
 
-from ....app.channels.base import BaseChannel
-from ....app.channels.utils import file_url_to_local_path
-from ....constant import WORKING_DIR
+from qwenpaw.app.channels.base import BaseChannel
+from qwenpaw.app.channels.utils import file_url_to_local_path
+from qwenpaw.constant import WORKING_DIR
 
 logger = logging.getLogger("qwenpaw.channels.matrix")
 
 
-CHANNEL_KEY = "matrix"
+CHANNEL_KEY = "agentteams_matrix"
 
 # Tunables: sync / typing / DM membership cache TTL
 SYNC_TIMEOUT_MS = 30000
@@ -346,7 +340,7 @@ class HistoryEntry:
     media_parts: Optional[List[Any]] = None
 
 
-class MatrixChannel(BaseChannel):
+class AgentTeamsMatrixChannel(BaseChannel):
     """QwenPaw channel that connects to a Matrix homeserver via matrix-nio."""
 
     channel = CHANNEL_KEY  # type: ignore[assignment]
@@ -369,9 +363,11 @@ class MatrixChannel(BaseChannel):
         history_limit: int = DEFAULT_HISTORY_LIMIT,
         sync_timeout_ms: int = 30000,
         on_reply_sent: Optional[Callable] = None,
-        show_tool_details: bool = True,
-        filter_tool_messages: bool = False,
-        filter_thinking: bool = False,
+        display_config: Any = None,
+        no_text_debounce: bool = True,
+        show_thinking: bool = True,
+        show_tool_calls: bool = True,
+        show_tool_results: bool = True,
         streaming_enabled: bool = True,
         workspace_dir: Path | None = None,
         access_control_dm: bool = False,
@@ -382,9 +378,8 @@ class MatrixChannel(BaseChannel):
         super().__init__(
             process=process,
             on_reply_sent=on_reply_sent,
-            show_tool_details=show_tool_details,
-            filter_tool_messages=filter_tool_messages,
-            filter_thinking=filter_thinking,
+            display_config=display_config,
+            no_text_debounce=no_text_debounce,
             streaming_enabled=streaming_enabled,
             access_control_dm=access_control_dm,
             access_control_group=access_control_group,
@@ -449,11 +444,10 @@ class MatrixChannel(BaseChannel):
         process: Callable,
         config: Any,
         on_reply_sent: Optional[Callable] = None,
-        show_tool_details: bool = True,
-        filter_tool_messages: bool = False,
-        filter_thinking: bool = False,
+        display_config: Any = None,
+        no_text_debounce: bool = True,
         workspace_dir: Path | None = None,
-    ) -> "MatrixChannel":
+    ) -> "AgentTeamsMatrixChannel":
         # Support pydantic model, dict, or SimpleNamespace
         if isinstance(config, dict):
             raw = config
@@ -479,13 +473,11 @@ class MatrixChannel(BaseChannel):
             history_limit=raw.get("history_limit", DEFAULT_HISTORY_LIMIT),
             sync_timeout_ms=raw.get("sync_timeout_ms", 30000),
             on_reply_sent=on_reply_sent,
-            show_tool_details=show_tool_details,
-            filter_tool_messages=(
-                filter_tool_messages or raw.get("filter_tool_messages", False)
-            ),
-            filter_thinking=(
-                filter_thinking or raw.get("filter_thinking", False)
-            ),
+            display_config=display_config,
+            no_text_debounce=no_text_debounce,
+            show_thinking=bool(raw.get("show_thinking", True)),
+            show_tool_calls=bool(raw.get("show_tool_calls", True)),
+            show_tool_results=bool(raw.get("show_tool_results", True)),
             streaming_enabled=bool(raw.get("streaming_enabled", True)),
             workspace_dir=workspace_dir,
             access_control_dm=bool(raw.get("access_control_dm", False)),
@@ -498,7 +490,7 @@ class MatrixChannel(BaseChannel):
         cls,
         process: Callable,
         on_reply_sent=None,
-    ) -> "MatrixChannel":
+    ) -> "AgentTeamsMatrixChannel":
         return cls(
             process=process,
             homeserver=os.environ.get("AGENTTEAMS_MATRIX_SERVER", ""),
@@ -594,7 +586,7 @@ class MatrixChannel(BaseChannel):
             importlib.import_module("olm")
         except ImportError:
             logger.error(
-                "MatrixChannel: olm not installed — falling back to "
+                "AgentTeamsMatrixChannel: olm not installed — falling back to "
                 "non-encrypted mode. "
                 "To enable E2EE: pip install matrix-nio[e2e] && "
                 "apt/dnf install libolm-dev",
@@ -712,7 +704,7 @@ class MatrixChannel(BaseChannel):
         if getattr(resp, "access_token", None):
             self._client.access_token = resp.access_token
         logger.info(
-            "MatrixChannel: logged in component=matrix user_id=%s method=password device=%s "
+            "AgentTeamsMatrixChannel: logged in component=matrix user_id=%s method=password device=%s "
             "device_name=%s",
             self._user_id,
             getattr(self._client, "device_id", ""),
@@ -723,12 +715,12 @@ class MatrixChannel(BaseChannel):
             if self._client.device_id:
                 self._client.load_store()
                 logger.info(
-                    "MatrixChannel: crypto store loaded component=matrix store_path=%s",
+                    "AgentTeamsMatrixChannel: crypto store loaded component=matrix store_path=%s",
                     self._client.store_path,
                 )
             else:
                 logger.warning(
-                    "MatrixChannel: password login returned no device_id component=matrix; "
+                    "AgentTeamsMatrixChannel: password login returned no device_id component=matrix; "
                     "E2EE store may not be reusable",
                 )
 
@@ -752,7 +744,7 @@ class MatrixChannel(BaseChannel):
         if isinstance(resp, LoginResponse):
             self._handle_password_login_success(resp)
             return True
-        logger.error("MatrixChannel: password login failed component=matrix response_type=%s", type(resp).__name__)
+        logger.error("AgentTeamsMatrixChannel: password login failed component=matrix response_type=%s", type(resp).__name__)
         return False
 
     async def _login_with_access_token(self) -> bool:
@@ -761,7 +753,7 @@ class MatrixChannel(BaseChannel):
         if isinstance(whoami, WhoamiResponse):
             if self.matrix_user_id and self.matrix_user_id != whoami.user_id:
                 logger.error(
-                    "MatrixChannel: configured user_id mismatch component=matrix configured_user_id=%s "
+                    "AgentTeamsMatrixChannel: configured user_id mismatch component=matrix configured_user_id=%s "
                     "token_owner=%s; refusing stale credentials",
                     self.matrix_user_id,
                     whoami.user_id,
@@ -775,7 +767,7 @@ class MatrixChannel(BaseChannel):
             if whoami.device_id:
                 self._client.device_id = whoami.device_id
             logger.info(
-                "MatrixChannel: logged in component=matrix user_id=%s method=token device=%s",
+                "AgentTeamsMatrixChannel: logged in component=matrix user_id=%s method=token device=%s",
                 self._user_id,
                 whoami.device_id,
             )
@@ -785,17 +777,17 @@ class MatrixChannel(BaseChannel):
                 if self._client.device_id:
                     self._client.load_store()
                     logger.info(
-                        "MatrixChannel: crypto store loaded component=matrix store_path=%s",
+                        "AgentTeamsMatrixChannel: crypto store loaded component=matrix store_path=%s",
                         self._client.store_path,
                     )
                 else:
                     logger.error(
-                        "MatrixChannel: E2EE enabled but whoami returned no device_id component=matrix "
+                        "AgentTeamsMatrixChannel: E2EE enabled but whoami returned no device_id component=matrix "
                         "encryption disabled; token may lack device scope",
                     )
                     self.encryption = False
             return True
-        logger.error("MatrixChannel: token login failed component=matrix response_type=%s", type(whoami).__name__)
+        logger.error("AgentTeamsMatrixChannel: token login failed component=matrix response_type=%s", type(whoami).__name__)
         return False
 
     def _register_plain_room_callbacks(self) -> None:
@@ -820,11 +812,11 @@ class MatrixChannel(BaseChannel):
             resp = await self._client.keys_upload()
             if not isinstance(resp, KeysUploadResponse):
                 logger.error(
-                    "MatrixChannel: E2E keys upload failed after login component=matrix response_type=%s",
+                    "AgentTeamsMatrixChannel: E2E keys upload failed after login component=matrix response_type=%s",
                     type(resp).__name__,
                 )
                 return False
-            logger.info("MatrixChannel: E2E keys uploaded component=matrix")
+            logger.info("AgentTeamsMatrixChannel: E2E keys uploaded component=matrix")
         # Encrypted media events (decrypted by nio, delivered as
         # RoomEncrypted* types)
         self._client.add_event_callback(
@@ -857,17 +849,17 @@ class MatrixChannel(BaseChannel):
             ),
         )
         logger.info(
-            "MatrixChannel: key verification to-device callback registered component=matrix",
+            "AgentTeamsMatrixChannel: key verification to-device callback registered component=matrix",
         )
         logger.info(
-            "MatrixChannel: E2EE enabled, encrypted event handlers registered component=matrix",
+            "AgentTeamsMatrixChannel: E2EE enabled, encrypted event handlers registered component=matrix",
         )
         return True
 
     async def start(self) -> None:
         if not self.homeserver:
             logger.warning(
-                "MatrixChannel: homeserver not configured, skipping component=matrix",
+                "AgentTeamsMatrixChannel: homeserver not configured, skipping component=matrix",
             )
             return
         self._preflight_e2ee_dependencies()
@@ -894,7 +886,7 @@ class MatrixChannel(BaseChannel):
             if not await self._login_with_access_token():
                 return
         else:
-            logger.error("MatrixChannel: no credentials configured component=matrix")
+            logger.error("AgentTeamsMatrixChannel: no credentials configured component=matrix")
             return
 
         self._register_plain_room_callbacks()
@@ -907,7 +899,7 @@ class MatrixChannel(BaseChannel):
         )
 
         self._sync_task = asyncio.create_task(self._sync_loop())
-        logger.info("MatrixChannel: sync loop started component=matrix")
+        logger.info("AgentTeamsMatrixChannel: sync loop started component=matrix")
 
     async def stop(self) -> None:
         if self._sync_task:
@@ -915,13 +907,13 @@ class MatrixChannel(BaseChannel):
             try:
                 await self._sync_task
             except asyncio.CancelledError:
-                logger.debug("MatrixChannel: sync task cancelled during stop component=matrix")
+                logger.debug("AgentTeamsMatrixChannel: sync task cancelled during stop component=matrix")
         if self._http_client:
             await self._http_client.aclose()
             self._http_client = None
         if self._client:
             await self._client.close()
-        logger.info("MatrixChannel: stopped component=matrix")
+        logger.info("AgentTeamsMatrixChannel: stopped component=matrix")
 
     # ------------------------------------------------------------------
     # Sync loop — token persistence, catch-up, incremental sync, E2EE
@@ -955,7 +947,7 @@ class MatrixChannel(BaseChannel):
             path.write_text("ready\n", encoding="utf-8")
         except Exception as exc:
             logger.warning(
-                "MatrixChannel: failed to write ready marker: %s",
+                "AgentTeamsMatrixChannel: failed to write ready marker: %s",
                 exc,
             )
 
@@ -985,7 +977,7 @@ class MatrixChannel(BaseChannel):
                     restored_any = restored_any or bool(self.device_id)
             if restored_any:
                 logger.info(
-                    "MatrixChannel: restored auth state from %s "
+                    "AgentTeamsMatrixChannel: restored auth state from %s "
                     "(token=%s, user=%s, device=%s)",
                     path,
                     bool(self.access_token),
@@ -994,7 +986,7 @@ class MatrixChannel(BaseChannel):
                 )
             else:
                 logger.debug(
-                    "MatrixChannel: auth state present at %s but not applied "
+                    "AgentTeamsMatrixChannel: auth state present at %s but not applied "
                     "(restore_token=%s restore_identity=%s)",
                     path,
                     restore_token,
@@ -1002,7 +994,7 @@ class MatrixChannel(BaseChannel):
                 )
         except Exception as exc:
             logger.warning(
-                "MatrixChannel: failed to load auth state from %s: %s",
+                "AgentTeamsMatrixChannel: failed to load auth state from %s: %s",
                 path,
                 exc,
             )
@@ -1033,7 +1025,7 @@ class MatrixChannel(BaseChannel):
                 self.device_id = device_id
         except Exception as exc:
             logger.warning(
-                "MatrixChannel: failed to persist auth state: %s",
+                "AgentTeamsMatrixChannel: failed to persist auth state: %s",
                 exc,
             )
 
@@ -1050,13 +1042,13 @@ class MatrixChannel(BaseChannel):
                 token = path.read_text().strip()
                 if token:
                     logger.info(
-                        "MatrixChannel: restored sync token from %s",
+                        "AgentTeamsMatrixChannel: restored sync token from %s",
                         path,
                     )
                     return token
             except Exception as exc:
                 logger.warning(
-                    "MatrixChannel: failed to read sync token: %s",
+                    "AgentTeamsMatrixChannel: failed to read sync token: %s",
                     exc,
                 )
         return None
@@ -1070,7 +1062,7 @@ class MatrixChannel(BaseChannel):
                 path.write_text(token)
             except Exception as exc:
                 logger.warning(
-                    "MatrixChannel: failed to save sync token: %s",
+                    "AgentTeamsMatrixChannel: failed to save sync token: %s",
                     exc,
                 )
 
@@ -1096,7 +1088,7 @@ class MatrixChannel(BaseChannel):
                 )
             await self._client.send_to_device_messages()
         except Exception as exc:
-            logger.warning("MatrixChannel: E2EE maintenance error: %s", exc)
+            logger.warning("AgentTeamsMatrixChannel: E2EE maintenance error: %s", exc)
 
     async def _on_key_verification_event(
         self,
@@ -1105,7 +1097,7 @@ class MatrixChannel(BaseChannel):
         """Complete the bot side of an Element SAS verification challenge."""
         if not self._client or not self._client.olm:
             logger.info(
-                "MatrixChannel: verification event received "
+                "AgentTeamsMatrixChannel: verification event received "
                 "but olm is not ready (event=%s, tx=%s, sender=%s)",
                 type(event).__name__,
                 getattr(event, "transaction_id", ""),
@@ -1115,7 +1107,7 @@ class MatrixChannel(BaseChannel):
 
         try:
             logger.info(
-                "MatrixChannel: verification event received "
+                "AgentTeamsMatrixChannel: verification event received "
                 "(event=%s, tx=%s, sender=%s, from_device=%s)",
                 type(event).__name__,
                 getattr(event, "transaction_id", ""),
@@ -1129,7 +1121,7 @@ class MatrixChannel(BaseChannel):
             elif isinstance(event, KeyVerificationMac):
                 sas = self._client.key_verifications.get(event.transaction_id)
                 logger.info(
-                    "MatrixChannel: key verification MAC received "
+                    "AgentTeamsMatrixChannel: key verification MAC received "
                     "(tx=%s, verified=%s, verified_devices=%s)",
                     event.transaction_id,
                     getattr(sas, "verified", False),
@@ -1145,7 +1137,7 @@ class MatrixChannel(BaseChannel):
                 )
                 if known_tx:
                     logger.info(
-                        "MatrixChannel: key verification cancelled by %s "
+                        "AgentTeamsMatrixChannel: key verification cancelled by %s "
                         "(tx=%s, reason=%s)",
                         event.sender,
                         event.transaction_id,
@@ -1153,7 +1145,7 @@ class MatrixChannel(BaseChannel):
                     )
                 else:
                     logger.info(
-                        "MatrixChannel: key verification cancelled for "
+                        "AgentTeamsMatrixChannel: key verification cancelled for "
                         "unknown key verification tx=%s from %s (reason=%s)",
                         event.transaction_id,
                         event.sender,
@@ -1161,7 +1153,7 @@ class MatrixChannel(BaseChannel):
                     )
             else:
                 logger.info(
-                    "MatrixChannel: unhandled verification event type=%s "
+                    "AgentTeamsMatrixChannel: unhandled verification event type=%s "
                     "(tx=%s, sender=%s)",
                     type(event).__name__,
                     getattr(event, "transaction_id", ""),
@@ -1169,7 +1161,7 @@ class MatrixChannel(BaseChannel):
                 )
         except Exception as exc:
             logger.warning(
-                "MatrixChannel: key verification handling failed: %s",
+                "AgentTeamsMatrixChannel: key verification handling failed: %s",
                 exc,
             )
 
@@ -1186,7 +1178,7 @@ class MatrixChannel(BaseChannel):
         ):
             return
         logger.info(
-            "MatrixChannel: raw to-device verification event "
+            "AgentTeamsMatrixChannel: raw to-device verification event "
             "(type=%s, parsed=%s, sender=%s)",
             raw_type,
             type(event).__name__,
@@ -1197,7 +1189,7 @@ class MatrixChannel(BaseChannel):
             "m.key.verification.ready",
         ):
             logger.warning(
-                "MatrixChannel: homeserver sent %s but current matrix-nio "
+                "AgentTeamsMatrixChannel: homeserver sent %s but current matrix-nio "
                 "cannot parse it into KeyVerificationEvent; handling via "
                 "raw to-device compatibility path",
                 raw_type,
@@ -1214,7 +1206,7 @@ class MatrixChannel(BaseChannel):
         """Log room-key request events that often require manual review."""
         if isinstance(event, RoomKeyRequest):
             logger.warning(
-                "MatrixChannel: room key request received; other device may "
+                "AgentTeamsMatrixChannel: room key request received; other device may "
                 "show 'Review' until trust decision is made "
                 "(sender=%s device=%s request_id=%s room_id=%s session_id=%s)",
                 event.sender,
@@ -1225,7 +1217,7 @@ class MatrixChannel(BaseChannel):
             )
         else:
             logger.info(
-                "MatrixChannel: room key request cancelled "
+                "AgentTeamsMatrixChannel: room key request cancelled "
                 "(sender=%s device=%s request_id=%s)",
                 event.sender,
                 event.requesting_device_id,
@@ -1250,7 +1242,7 @@ class MatrixChannel(BaseChannel):
         request_key = f"{sender}|{from_device}|{transaction_id}"
         if request_key in self._handled_verification_requests:
             logger.debug(
-                "MatrixChannel: verification request already handled "
+                "AgentTeamsMatrixChannel: verification request already handled "
                 "(sender=%s, device=%s, tx=%s)",
                 sender,
                 from_device,
@@ -1261,7 +1253,7 @@ class MatrixChannel(BaseChannel):
 
         if not sender or not from_device:
             logger.warning(
-                "MatrixChannel: cannot handle verification request without "
+                "AgentTeamsMatrixChannel: cannot handle verification request without "
                 "sender/device (sender=%s, device=%s, tx=%s)",
                 sender,
                 from_device,
@@ -1274,7 +1266,7 @@ class MatrixChannel(BaseChannel):
         our_device = getattr(self._client, "device_id", "") or ""
         if not our_device:
             logger.warning(
-                "MatrixChannel: cannot reply verification request without "
+                "AgentTeamsMatrixChannel: cannot reply verification request without "
                 "local device_id (sender=%s, device=%s, tx=%s)",
                 sender,
                 from_device,
@@ -1297,7 +1289,7 @@ class MatrixChannel(BaseChannel):
             resp = await self._client.to_device(ready_message)
         except Exception as exc:
             logger.warning(
-                "MatrixChannel: failed to send verification ready "
+                "AgentTeamsMatrixChannel: failed to send verification ready "
                 "(sender=%s, device=%s, tx=%s): %s",
                 sender,
                 from_device,
@@ -1308,7 +1300,7 @@ class MatrixChannel(BaseChannel):
 
         if isinstance(resp, ToDeviceError):
             logger.warning(
-                "MatrixChannel: homeserver rejected verification ready "
+                "AgentTeamsMatrixChannel: homeserver rejected verification ready "
                 "(sender=%s, device=%s, tx=%s): %s",
                 sender,
                 from_device,
@@ -1318,7 +1310,7 @@ class MatrixChannel(BaseChannel):
             return
 
         logger.info(
-            "MatrixChannel: sent verification ready for request "
+            "AgentTeamsMatrixChannel: sent verification ready for request "
             "(sender=%s, device=%s, tx=%s, methods=%s)",
             sender,
             from_device,
@@ -1337,7 +1329,7 @@ class MatrixChannel(BaseChannel):
         if not tx:
             return
         logger.info(
-            "MatrixChannel: received verification done from %s (tx=%s)",
+            "AgentTeamsMatrixChannel: received verification done from %s (tx=%s)",
             getattr(event, "sender", ""),
             tx,
         )
@@ -1361,7 +1353,7 @@ class MatrixChannel(BaseChannel):
 
         if event.transaction_id not in self._client.key_verifications:
             logger.warning(
-                "MatrixChannel: cannot accept key verification from %s "
+                "AgentTeamsMatrixChannel: cannot accept key verification from %s "
                 "(device=%s, tx=%s) because no SAS state exists yet; "
                 "retry verification after the next sync",
                 event.sender,
@@ -1376,7 +1368,7 @@ class MatrixChannel(BaseChannel):
             )
         except LocalProtocolError as exc:
             logger.warning(
-                "MatrixChannel: accept_key_verification failed for tx=%s: %s",
+                "AgentTeamsMatrixChannel: accept_key_verification failed for tx=%s: %s",
                 event.transaction_id,
                 exc,
             )
@@ -1384,14 +1376,14 @@ class MatrixChannel(BaseChannel):
 
         if isinstance(resp, ToDeviceError):
             logger.warning(
-                "MatrixChannel: accept_key_verification failed for tx=%s: %s",
+                "AgentTeamsMatrixChannel: accept_key_verification failed for tx=%s: %s",
                 event.transaction_id,
                 resp,
             )
             return
 
         logger.info(
-            "MatrixChannel: accepted key verification from %s "
+            "AgentTeamsMatrixChannel: accepted key verification from %s "
             "(device=%s, tx=%s)",
             event.sender,
             event.from_device,
@@ -1410,7 +1402,7 @@ class MatrixChannel(BaseChannel):
         peer = self._verification_tx_peers.get(transaction_id)
         if not peer:
             logger.warning(
-                "MatrixChannel: cannot send verification done for tx=%s "
+                "AgentTeamsMatrixChannel: cannot send verification done for tx=%s "
                 "because peer device is unknown",
                 transaction_id,
             )
@@ -1427,7 +1419,7 @@ class MatrixChannel(BaseChannel):
             resp = await self._client.to_device(done_message)
         except Exception as exc:
             logger.warning(
-                "MatrixChannel: failed to send verification done "
+                "AgentTeamsMatrixChannel: failed to send verification done "
                 "(tx=%s, sender=%s, device=%s): %s",
                 transaction_id,
                 sender,
@@ -1438,7 +1430,7 @@ class MatrixChannel(BaseChannel):
 
         if isinstance(resp, ToDeviceError):
             logger.warning(
-                "MatrixChannel: homeserver rejected verification done "
+                "AgentTeamsMatrixChannel: homeserver rejected verification done "
                 "(tx=%s, sender=%s, device=%s): %s",
                 transaction_id,
                 sender,
@@ -1449,7 +1441,7 @@ class MatrixChannel(BaseChannel):
 
         self._sent_verification_done.add(transaction_id)
         logger.info(
-            "MatrixChannel: sent verification done "
+            "AgentTeamsMatrixChannel: sent verification done "
             "(tx=%s, sender=%s, device=%s)",
             transaction_id,
             sender,
@@ -1469,7 +1461,7 @@ class MatrixChannel(BaseChannel):
                 await self._client.keys_query()
         except Exception as exc:
             logger.warning(
-                "MatrixChannel: failed to query keys for verification "
+                "AgentTeamsMatrixChannel: failed to query keys for verification "
                 "from %s: %s",
                 event.sender,
                 exc,
@@ -1480,7 +1472,7 @@ class MatrixChannel(BaseChannel):
             self._client.olm.handle_key_verification(event)
         except Exception as exc:
             logger.warning(
-                "MatrixChannel: failed to rebuild key verification state "
+                "AgentTeamsMatrixChannel: failed to rebuild key verification state "
                 "for tx=%s: %s",
                 event.transaction_id,
                 exc,
@@ -1497,7 +1489,7 @@ class MatrixChannel(BaseChannel):
         sas = self._client.key_verifications.get(event.transaction_id)
         if sas is None:
             logger.warning(
-                "MatrixChannel: key verification key for unknown tx=%s "
+                "AgentTeamsMatrixChannel: key verification key for unknown tx=%s "
                 "from %s; ask Element to restart verification",
                 event.transaction_id,
                 event.sender,
@@ -1505,7 +1497,7 @@ class MatrixChannel(BaseChannel):
             return
 
         logger.warning(
-            "MatrixChannel: Element key verification challenge from %s "
+            "AgentTeamsMatrixChannel: Element key verification challenge from %s "
             "(tx=%s): %s",
             event.sender,
             event.transaction_id,
@@ -1520,7 +1512,7 @@ class MatrixChannel(BaseChannel):
             )
         except LocalProtocolError as exc:
             logger.warning(
-                "MatrixChannel: confirm_short_auth_string failed "
+                "AgentTeamsMatrixChannel: confirm_short_auth_string failed "
                 "for tx=%s: %s",
                 event.transaction_id,
                 exc,
@@ -1529,7 +1521,7 @@ class MatrixChannel(BaseChannel):
 
         if isinstance(resp, ToDeviceError):
             logger.warning(
-                "MatrixChannel: confirm_short_auth_string failed "
+                "AgentTeamsMatrixChannel: confirm_short_auth_string failed "
                 "for tx=%s: %s",
                 event.transaction_id,
                 resp,
@@ -1537,7 +1529,7 @@ class MatrixChannel(BaseChannel):
             return
 
         logger.info(
-            "MatrixChannel: confirmed local SAS side for tx=%s; "
+            "AgentTeamsMatrixChannel: confirmed local SAS side for tx=%s; "
             "compare the challenge in Element and accept there if it matches",
             event.transaction_id,
         )
@@ -1560,7 +1552,7 @@ class MatrixChannel(BaseChannel):
                         ),
                     )
             except Exception as exc:
-                logger.debug("MatrixChannel: get_emoji failed: %s", exc)
+                logger.debug("AgentTeamsMatrixChannel: get_emoji failed: %s", exc)
 
         get_decimal = getattr(sas, "get_decimal", None)
         if callable(get_decimal):
@@ -1571,7 +1563,7 @@ class MatrixChannel(BaseChannel):
                         "decimal=" + " ".join(str(n) for n in decimals),
                     )
             except Exception as exc:
-                logger.debug("MatrixChannel: get_decimal failed: %s", exc)
+                logger.debug("AgentTeamsMatrixChannel: get_decimal failed: %s", exc)
 
         return "; ".join(parts) if parts else "unavailable"
 
@@ -1593,7 +1585,7 @@ class MatrixChannel(BaseChannel):
         # internally calls receive_response() which fires callbacks.
         if next_batch is None:
             logger.info(
-                "MatrixChannel: no sync token found, "
+                "AgentTeamsMatrixChannel: no sync token found, "
                 "performing catch-up sync component=matrix messages_suppressed=True",
             )
             try:
@@ -1612,21 +1604,21 @@ class MatrixChannel(BaseChannel):
                         self._save_sync_token(next_batch)
                     # Still auto-join invited rooms during catch-up
                     for room_id in resp.rooms.invite:
-                        logger.info("MatrixChannel: auto-joining component=matrix room_id=%s", room_id)
+                        logger.info("AgentTeamsMatrixChannel: auto-joining component=matrix room_id=%s", room_id)
                         await self._client.join(room_id)
                     await self._e2ee_maintenance()
                     logger.info(
-                        "MatrixChannel: catch-up sync done, "
+                        "AgentTeamsMatrixChannel: catch-up sync done, "
                         "will process messages from next sync component=matrix",
                     )
                 else:
                     logger.warning(
-                        "MatrixChannel: catch-up sync error component=matrix response_type=%s",
+                        "AgentTeamsMatrixChannel: catch-up sync error component=matrix response_type=%s",
                         type(resp).__name__,
                     )
             except Exception as exc:
                 logger.exception(
-                    "MatrixChannel: catch-up sync exception component=matrix error_type=%s",
+                    "AgentTeamsMatrixChannel: catch-up sync exception component=matrix error_type=%s",
                     type(exc).__name__,
                 )
         else:
@@ -1635,7 +1627,7 @@ class MatrixChannel(BaseChannel):
             # Event callbacks are already registered so any messages received
             # during the offline window will be processed normally.
             logger.info(
-                "MatrixChannel: restored token, "
+                "AgentTeamsMatrixChannel: restored token, "
                 "performing full-state sync component=matrix",
             )
             try:
@@ -1649,17 +1641,17 @@ class MatrixChannel(BaseChannel):
                     if next_batch is not None:
                         self._save_sync_token(next_batch)
                     for room_id in resp.rooms.invite:
-                        logger.info("MatrixChannel: auto-joining component=matrix room_id=%s", room_id)
+                        logger.info("AgentTeamsMatrixChannel: auto-joining component=matrix room_id=%s", room_id)
                         await self._client.join(room_id)
                     await self._e2ee_maintenance()
                 else:
                     logger.warning(
-                        "MatrixChannel: full-state sync error component=matrix response_type=%s",
+                        "AgentTeamsMatrixChannel: full-state sync error component=matrix response_type=%s",
                         type(resp).__name__,
                     )
             except Exception as exc:
                 logger.exception(
-                    "MatrixChannel: full-state sync exception component=matrix error_type=%s",
+                    "AgentTeamsMatrixChannel: full-state sync exception component=matrix error_type=%s",
                     type(exc).__name__,
                 )
 
@@ -1678,7 +1670,7 @@ class MatrixChannel(BaseChannel):
                         self._save_sync_token(next_batch)
                     # Auto-join invited rooms
                     for room_id in resp.rooms.invite:
-                        logger.info("MatrixChannel: auto-joining component=matrix room_id=%s", room_id)
+                        logger.info("AgentTeamsMatrixChannel: auto-joining component=matrix room_id=%s", room_id)
                         await self._client.join(room_id)
                     # E2EE: full key maintenance (upload, query, claim,
                     # to-device)
@@ -1690,7 +1682,7 @@ class MatrixChannel(BaseChannel):
                         None,
                     ) in {"M_UNKNOWN_TOKEN", "M_MISSING_TOKEN"}:
                         logger.error(
-                            "MatrixChannel: sync stopped due to "
+                            "AgentTeamsMatrixChannel: sync stopped due to "
                             "invalid/missing access token; please re-login "
                             "(password or fresh token) component=matrix",
                         )
@@ -1698,13 +1690,13 @@ class MatrixChannel(BaseChannel):
                             self._client.access_token = ""
                         self.access_token = ""
                         return
-                    logger.warning("MatrixChannel: sync error component=matrix response_type=%s", type(resp).__name__)
+                    logger.warning("AgentTeamsMatrixChannel: sync error component=matrix response_type=%s", type(resp).__name__)
                     await asyncio.sleep(5)
             except asyncio.CancelledError:
-                logger.debug("MatrixChannel: sync loop cancelled component=matrix")
+                logger.debug("AgentTeamsMatrixChannel: sync loop cancelled component=matrix")
                 raise
             except Exception as exc:
-                logger.exception("MatrixChannel: sync exception component=matrix error_type=%s", type(exc).__name__)
+                logger.exception("AgentTeamsMatrixChannel: sync exception component=matrix error_type=%s", type(exc).__name__)
                 await asyncio.sleep(5)
 
     # ------------------------------------------------------------------
@@ -1720,7 +1712,7 @@ class MatrixChannel(BaseChannel):
         """Return True if chat type is muted at channel level."""
         if is_dm and self.dm_disabled:
             logger.warning(
-                "MatrixChannel: dropping DM message (dm_disabled) "
+                "AgentTeamsMatrixChannel: dropping DM message (dm_disabled) "
                 "sender=%s room=%s",
                 sender_id,
                 room_id,
@@ -1728,7 +1720,7 @@ class MatrixChannel(BaseChannel):
             return True
         if not is_dm and self.group_disabled:
             logger.warning(
-                "MatrixChannel: dropping group message (group_disabled) "
+                "AgentTeamsMatrixChannel: dropping group message (group_disabled) "
                 "sender=%s room=%s",
                 sender_id,
                 room_id,
@@ -1899,7 +1891,7 @@ class MatrixChannel(BaseChannel):
                 return name
         except Exception as exc:
             logger.debug(
-                "MatrixChannel: user_name failed for %s: %s",
+                "AgentTeamsMatrixChannel: user_name failed for %s: %s",
                 user_id,
                 exc,
             )
@@ -1921,7 +1913,7 @@ class MatrixChannel(BaseChannel):
                             return name
                     except Exception as exc:
                         logger.debug(
-                            "MatrixChannel: client_room user_name failed "
+                            "AgentTeamsMatrixChannel: client_room user_name failed "
                             "for %s: %s",
                             user_id,
                             exc,
@@ -2129,17 +2121,17 @@ class MatrixChannel(BaseChannel):
             )
             headers = {"Authorization": f"Bearer {self.access_token}"}
             if not self._http_client:
-                logger.warning("MatrixChannel: HTTP client not initialized")
+                logger.warning("AgentTeamsMatrixChannel: HTTP client not initialized")
                 return None
             resp = await self._http_client.get(url, headers=headers)
             resp.raise_for_status()
             dest = self._media_dir() / filename
             dest.write_bytes(resp.content)
-            logger.debug("MatrixChannel: downloaded %s → %s", mxc_url, dest)
+            logger.debug("AgentTeamsMatrixChannel: downloaded %s → %s", mxc_url, dest)
             return str(dest)
         except Exception as exc:
             logger.warning(
-                "MatrixChannel: failed to download %s: %s",
+                "AgentTeamsMatrixChannel: failed to download %s: %s",
                 mxc_url,
                 exc,
             )
@@ -2169,7 +2161,7 @@ class MatrixChannel(BaseChannel):
             )
             headers = {"Authorization": f"Bearer {self.access_token}"}
             if not self._http_client:
-                logger.warning("MatrixChannel: HTTP client not initialized")
+                logger.warning("AgentTeamsMatrixChannel: HTTP client not initialized")
                 return None
             resp = await self._http_client.get(url, headers=headers)
             resp.raise_for_status()
@@ -2188,14 +2180,14 @@ class MatrixChannel(BaseChannel):
             dest = self._media_dir() / filename
             dest.write_bytes(plaintext)
             logger.debug(
-                "MatrixChannel: downloaded+decrypted %s → %s",
+                "AgentTeamsMatrixChannel: downloaded+decrypted %s → %s",
                 mxc_url,
                 dest,
             )
             return str(dest)
         except Exception as exc:
             logger.warning(
-                "MatrixChannel: failed to download encrypted %s: %s",
+                "AgentTeamsMatrixChannel: failed to download encrypted %s: %s",
                 mxc_url,
                 exc,
             )
@@ -2214,7 +2206,7 @@ class MatrixChannel(BaseChannel):
     ) -> None:
         """Handle undecryptable encrypted events (missing session key)."""
         logger.warning(
-            "MatrixChannel: could not decrypt event %s in %s (session_id=%s)",
+            "AgentTeamsMatrixChannel: could not decrypt event %s in %s (session_id=%s)",
             event.event_id,
             room.room_id,
             getattr(event, "session_id", "?"),
@@ -2419,7 +2411,7 @@ class MatrixChannel(BaseChannel):
             path = Path(file_url_to_local_path(file_ref) or file_ref)
             if not path.exists():
                 logger.warning(
-                    "MatrixChannel: upload source not found: %s",
+                    "AgentTeamsMatrixChannel: upload source not found: %s",
                     file_ref,
                 )
                 return None
@@ -2434,16 +2426,16 @@ class MatrixChannel(BaseChannel):
             )
             if isinstance(resp, UploadResponse):
                 logger.debug(
-                    "MatrixChannel: uploaded %s → %s",
+                    "AgentTeamsMatrixChannel: uploaded %s → %s",
                     path.name,
                     resp.content_uri,
                 )
                 return resp.content_uri
-            logger.warning("MatrixChannel: upload failed: %s", resp)
+            logger.warning("AgentTeamsMatrixChannel: upload failed: %s", resp)
             return None
         except Exception as exc:
             logger.warning(
-                "MatrixChannel: upload error for %s: %s",
+                "AgentTeamsMatrixChannel: upload error for %s: %s",
                 file_ref,
                 exc,
             )
@@ -2518,7 +2510,7 @@ class MatrixChannel(BaseChannel):
                     task = json.loads(meta_path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError) as exc:
                     logger.debug(
-                        "MatrixChannel: failed to read task room metadata "
+                        "AgentTeamsMatrixChannel: failed to read task room metadata "
                         "%s: %s",
                         meta_path,
                         exc,
@@ -2566,7 +2558,7 @@ class MatrixChannel(BaseChannel):
 
         if self._looks_like_teamharness_task_room(room_id, room):
             logger.debug(
-                "MatrixChannel: room=%s is a TeamHarness task room; "
+                "AgentTeamsMatrixChannel: room=%s is a TeamHarness task room; "
                 "treating as group semantics",
                 room_id,
             )
@@ -2584,7 +2576,7 @@ class MatrixChannel(BaseChannel):
                 and sender_id in members
             )
             logger.debug(
-                "MatrixChannel: DM check (cached) room=%s members=%d is_dm=%s",
+                "AgentTeamsMatrixChannel: DM check (cached) room=%s members=%d is_dm=%s",
                 room_id,
                 len(members),
                 is_dm,
@@ -2605,7 +2597,7 @@ class MatrixChannel(BaseChannel):
                     and sender_id in members
                 )
                 logger.debug(
-                    "MatrixChannel: DM check (API) room=%s members=%d "
+                    "AgentTeamsMatrixChannel: DM check (API) room=%s members=%d "
                     "is_dm=%s members=%s",
                     room_id,
                     len(members),
@@ -2615,13 +2607,13 @@ class MatrixChannel(BaseChannel):
                 return is_dm
             else:
                 logger.warning(
-                    "MatrixChannel: joined_members failed for %s: %s",
+                    "AgentTeamsMatrixChannel: joined_members failed for %s: %s",
                     room_id,
                     resp,
                 )
                 fallback = self._is_dm_room_fallback(room, sender_id)
                 logger.warning(
-                    "MatrixChannel: joined_members fallback for %s "
+                    "AgentTeamsMatrixChannel: joined_members fallback for %s "
                     "-> is_dm=%s",
                     room_id,
                     fallback,
@@ -2630,7 +2622,7 @@ class MatrixChannel(BaseChannel):
         except Exception as exc:
             fallback = self._is_dm_room_fallback(room, sender_id)
             logger.warning(
-                "MatrixChannel: joined_members error for %s: %s; "
+                "AgentTeamsMatrixChannel: joined_members error for %s: %s; "
                 "fallback is_dm=%s",
                 room_id,
                 exc,
@@ -2679,7 +2671,7 @@ class MatrixChannel(BaseChannel):
 
         if teamharness_self_trigger is None and _is_teamharness_tool_display(text):
             logger.info(
-                "MatrixChannel: skipping TeamHarness tool display event "
+                "AgentTeamsMatrixChannel: skipping TeamHarness tool display event "
                 "(room=%s sender=%s event_id=%s)",
                 room_id,
                 sender_id,
@@ -2705,7 +2697,7 @@ class MatrixChannel(BaseChannel):
                 if is_thread_event:
                     return
                 logger.info(
-                    "MatrixChannel: group text not mentioned, cached to "
+                    "AgentTeamsMatrixChannel: group text not mentioned, cached to "
                     "history (room=%s sender=%s event_id=%s)",
                     room_id,
                     sender_id,
@@ -2735,7 +2727,7 @@ class MatrixChannel(BaseChannel):
         # Drop it silently to prevent infinite ping-pong between agents.
         if stripped.strip() == "NO_REPLY":
             logger.info(
-                "MatrixChannel: received NO_REPLY from %s in %s, ignoring",
+                "AgentTeamsMatrixChannel: received NO_REPLY from %s in %s, ignoring",
                 sender_id,
                 room_id,
             )
@@ -2848,7 +2840,7 @@ class MatrixChannel(BaseChannel):
                 if is_thread_event:
                     return
                 logger.info(
-                    "MatrixChannel: group media not mentioned, cached to "
+                    "AgentTeamsMatrixChannel: group media not mentioned, cached to "
                     "history (room=%s sender=%s event_id=%s)",
                     room_id,
                     sender_id,
@@ -2997,7 +2989,7 @@ class MatrixChannel(BaseChannel):
             )
         except Exception as exc:
             logger.debug(
-                "MatrixChannel: read receipt failed for %s: %s",
+                "AgentTeamsMatrixChannel: read receipt failed for %s: %s",
                 event_id,
                 exc,
             )
@@ -3029,7 +3021,7 @@ class MatrixChannel(BaseChannel):
             )
         except Exception as exc:
             logger.debug(
-                "MatrixChannel: typing indicator failed for %s: %s",
+                "AgentTeamsMatrixChannel: typing indicator failed for %s: %s",
                 room_id,
                 exc,
             )
@@ -3059,13 +3051,13 @@ class MatrixChannel(BaseChannel):
                 )
         except asyncio.CancelledError:
             logger.debug(
-                "MatrixChannel: typing renewal cancelled for %s",
+                "AgentTeamsMatrixChannel: typing renewal cancelled for %s",
                 room_id,
             )
             raise
         except Exception as exc:
             logger.debug(
-                "MatrixChannel: typing renewal failed for %s: %s",
+                "AgentTeamsMatrixChannel: typing renewal failed for %s: %s",
                 room_id,
                 exc,
             )
@@ -3076,7 +3068,7 @@ class MatrixChannel(BaseChannel):
                     await self._client.room_typing(room_id, typing_state=False)
                 except Exception as exc:
                     logger.debug(
-                        "MatrixChannel: typing stop after cap failed "
+                        "AgentTeamsMatrixChannel: typing stop after cap failed "
                         "for %s: %s",
                         room_id,
                         exc,
@@ -3251,7 +3243,7 @@ class MatrixChannel(BaseChannel):
                         return name
                 except Exception as exc:
                     logger.debug(
-                        "MatrixChannel: resolve_display_name user_name failed "
+                        "AgentTeamsMatrixChannel: resolve_display_name user_name failed "
                         "for %s: %s",
                         user_id,
                         exc,
@@ -3278,7 +3270,7 @@ class MatrixChannel(BaseChannel):
                 target_room.encrypted = True
             except Exception as exc:
                 logger.debug(
-                    "MatrixChannel: failed to mark %s encrypted: %s",
+                    "AgentTeamsMatrixChannel: failed to mark %s encrypted: %s",
                     room_id,
                     exc,
                 )
@@ -3313,7 +3305,7 @@ class MatrixChannel(BaseChannel):
             return
         if not self._client or not getattr(self._client, "olm", None):
             logger.warning(
-                "MatrixChannel: E2EE configured but Olm is not ready; "
+                "AgentTeamsMatrixChannel: E2EE configured but Olm is not ready; "
                 "outbound message to %s will not be encrypted",
                 room_id,
             )
@@ -3323,7 +3315,7 @@ class MatrixChannel(BaseChannel):
             return
         if room_id not in getattr(self._client, "rooms", {}):
             logger.warning(
-                "MatrixChannel: room %s not in client cache; "
+                "AgentTeamsMatrixChannel: room %s not in client cache; "
                 "cannot confirm E2EE before send (wait for sync / join)",
                 room_id,
             )
@@ -3336,7 +3328,7 @@ class MatrixChannel(BaseChannel):
             )
         except Exception as exc:
             logger.warning(
-                "MatrixChannel: failed to get m.room.encryption for %s: %s",
+                "AgentTeamsMatrixChannel: failed to get m.room.encryption for %s: %s",
                 room_id,
                 exc,
             )
@@ -3347,14 +3339,14 @@ class MatrixChannel(BaseChannel):
             if algo:
                 self._mark_room_encrypted(room_id)
                 logger.debug(
-                    "MatrixChannel: marked %s encrypted from server (%s)",
+                    "AgentTeamsMatrixChannel: marked %s encrypted from server (%s)",
                     room_id,
                     algo,
                 )
 
         if not self._room_will_encrypt(room_id):
             logger.warning(
-                "MatrixChannel: E2EE on but room %s is not encrypted in "
+                "AgentTeamsMatrixChannel: E2EE on but room %s is not encrypted in "
                 "client after state check; outbound send may be plaintext",
                 room_id,
             )
@@ -3392,7 +3384,7 @@ class MatrixChannel(BaseChannel):
     async def _send_plain_text(self, room_id: str, text: str) -> None:
         """Send a plain Matrix text event without invoking the agent path."""
         if not self._client:
-            logger.error("MatrixChannel: direct send called but client not ready")
+            logger.error("AgentTeamsMatrixChannel: direct send called but client not ready")
             return
         try:
             await self._room_send_with_retry(
@@ -3402,7 +3394,7 @@ class MatrixChannel(BaseChannel):
             )
         except Exception as exc:
             logger.exception(
-                "MatrixChannel: direct send failed to %s: %s",
+                "AgentTeamsMatrixChannel: direct send failed to %s: %s",
                 room_id,
                 exc,
             )
@@ -3512,7 +3504,7 @@ class MatrixChannel(BaseChannel):
                 self._write_attachment_context(to_handle, event_id)
         except Exception as exc:
             logger.warning(
-                "MatrixChannel: _ensure_thread_root failed for %s: %s",
+                "AgentTeamsMatrixChannel: _ensure_thread_root failed for %s: %s",
                 to_handle,
                 exc,
             )
@@ -3549,7 +3541,7 @@ class MatrixChannel(BaseChannel):
             return getattr(resp, "event_id", None)
         except Exception as exc:
             logger.warning(
-                "MatrixChannel: streaming thread send failed for %s: %s",
+                "AgentTeamsMatrixChannel: streaming thread send failed for %s: %s",
                 to_handle,
                 exc,
             )
@@ -3596,7 +3588,7 @@ class MatrixChannel(BaseChannel):
             )
         except Exception as exc:
             logger.warning(
-                "MatrixChannel: event edit failed for %s: %s",
+                "AgentTeamsMatrixChannel: event edit failed for %s: %s",
                 to_handle,
                 exc,
             )
@@ -3695,7 +3687,7 @@ class MatrixChannel(BaseChannel):
             tmp.replace(path)
         except OSError as exc:
             logger.debug(
-                "MatrixChannel: attachment context write failed for %s: %s",
+                "AgentTeamsMatrixChannel: attachment context write failed for %s: %s",
                 room_id,
                 exc,
             )
@@ -3858,7 +3850,7 @@ class MatrixChannel(BaseChannel):
         media_uri = await self._upload_file(file_ref)
         if not media_uri:
             logger.warning(
-                "MatrixChannel: long text fallback upload failed for %s",
+                "AgentTeamsMatrixChannel: long text fallback upload failed for %s",
                 file_ref,
             )
         long_message_metadata = _long_message_metadata(path, media_uri)
@@ -3916,7 +3908,7 @@ class MatrixChannel(BaseChannel):
                 )
             except Exception as exc:
                 logger.warning(
-                    "MatrixChannel: long text fallback media event failed "
+                    "AgentTeamsMatrixChannel: long text fallback media event failed "
                     "for %s: %s",
                     room_id,
                     exc,
@@ -4258,7 +4250,7 @@ class MatrixChannel(BaseChannel):
             await self._edit_thread_root(to_handle, fallback_meta, status)
         if "Task has been cancelled" in (err_text or ""):
             logger.info(
-                "MatrixChannel: suppressing cancellation error component=matrix handle=%s",
+                "AgentTeamsMatrixChannel: suppressing cancellation error component=matrix handle=%s",
                 to_handle,
             )
             await self._send_typing(to_handle, False)
@@ -4306,7 +4298,7 @@ class MatrixChannel(BaseChannel):
 
         # 1. Check Matrix errcode (string)
         errcode = getattr(resp, "status_code", None)
-        if errcode in MatrixChannel._RETRYABLE_MATRIX_ERRCODES:
+        if errcode in AgentTeamsMatrixChannel._RETRYABLE_MATRIX_ERRCODES:
             return True
 
         # 2. Fall back to HTTP status via transport_response
@@ -4369,7 +4361,7 @@ class MatrixChannel(BaseChannel):
                         else:
                             delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
                         logger.warning(
-                            "MatrixChannel: room_send returned retryable error "
+                            "AgentTeamsMatrixChannel: room_send returned retryable error "
                             "(attempt %d/%d) room_id=%s status=%s message=%s — "
                             "retrying in %.1fs component=matrix",
                             attempt + 1,
@@ -4385,7 +4377,7 @@ class MatrixChannel(BaseChannel):
                     # Non-retryable or retries exhausted — let caller handle
                     if attempt >= max_retries and self._is_retryable_room_send_response(resp):
                         logger.error(
-                            "MatrixChannel: room_send retries exhausted "
+                            "AgentTeamsMatrixChannel: room_send retries exhausted "
                             "(attempts=%d) room_id=%s status=%s message=%s "
                             "component=matrix",
                             max_retries,
@@ -4398,7 +4390,7 @@ class MatrixChannel(BaseChannel):
                 # Success
                 if attempt > 0:
                     logger.info(
-                        "MatrixChannel: room_send succeeded after %d "
+                        "AgentTeamsMatrixChannel: room_send succeeded after %d "
                         "retry(ies) room_id=%s component=matrix",
                         attempt,
                         room_id,
@@ -4409,7 +4401,7 @@ class MatrixChannel(BaseChannel):
                 if self._is_retryable_send_error(exc) and attempt < max_retries:
                     delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
                     logger.warning(
-                        "MatrixChannel: room_send raised retryable exception "
+                        "AgentTeamsMatrixChannel: room_send raised retryable exception "
                         "(attempt %d/%d) room_id=%s error=%s — "
                         "retrying in %.1fs component=matrix",
                         attempt + 1,
@@ -4424,7 +4416,7 @@ class MatrixChannel(BaseChannel):
                 # Non-retryable or retries exhausted
                 if attempt >= max_retries and self._is_retryable_send_error(exc):
                     logger.error(
-                        "MatrixChannel: room_send retries exhausted "
+                        "AgentTeamsMatrixChannel: room_send retries exhausted "
                         "(attempts=%d) room_id=%s last_error=%s "
                         "component=matrix",
                         max_retries,
@@ -4450,7 +4442,7 @@ class MatrixChannel(BaseChannel):
         meta: Optional[Dict[str, Any]] = None,
     ) -> None:
         if not self._client:
-            logger.error("MatrixChannel: send called but client not ready component=matrix")
+            logger.error("AgentTeamsMatrixChannel: send called but client not ready component=matrix")
             return
 
         room_id = (meta or {}).get("room_id") or to_handle
@@ -4458,7 +4450,7 @@ class MatrixChannel(BaseChannel):
         # NO_REPLY protocol: agent decided it has nothing to say.
         if _ends_with_no_reply_control(text):
             logger.info(
-                "MatrixChannel: suppressing NO_REPLY send component=matrix room_id=%s",
+                "AgentTeamsMatrixChannel: suppressing NO_REPLY send component=matrix room_id=%s",
                 room_id,
             )
             await self._send_typing(room_id, False)
@@ -4477,7 +4469,7 @@ class MatrixChannel(BaseChannel):
             html_body=html_body,
         )
         logger.debug(
-            "MatrixChannel (custom): sending message component=matrix with formatted_body "
+            "AgentTeamsMatrixChannel (custom): sending message component=matrix with formatted_body "
             "text_len=%d html_len=%d",
             len(text),
             len(html_body),
@@ -4515,7 +4507,7 @@ class MatrixChannel(BaseChannel):
                 await self._flush_pending_thread_parts(room_id, meta_dict)
         except Exception as exc:
             logger.exception(
-                "MatrixChannel: send failed to %s: %s",
+                "AgentTeamsMatrixChannel: send failed to %s: %s",
                 room_id,
                 exc,
             )
@@ -4566,7 +4558,7 @@ class MatrixChannel(BaseChannel):
         mxc_uri = await self._upload_file(file_ref)
         if not mxc_uri:
             logger.warning(
-                "MatrixChannel: send_media upload failed for %s",
+                "AgentTeamsMatrixChannel: send_media upload failed for %s",
                 file_ref,
             )
             return None
@@ -4581,7 +4573,7 @@ class MatrixChannel(BaseChannel):
                 meta,
             )
             logger.debug(
-                "MatrixChannel: sent %s %s to %s",
+                "AgentTeamsMatrixChannel: sent %s %s to %s",
                 matrix_msgtype,
                 os.path.basename(file_url_to_local_path(file_ref) or file_ref)
                 or "file",
@@ -4590,7 +4582,7 @@ class MatrixChannel(BaseChannel):
             return mxc_uri
         except Exception as exc:
             logger.exception(
-                "MatrixChannel: send_media failed for %s: %s",
+                "AgentTeamsMatrixChannel: send_media failed for %s: %s",
                 room_id,
                 exc,
             )
