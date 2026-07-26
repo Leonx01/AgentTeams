@@ -6,6 +6,8 @@ Record image-affecting changes to `manager/`, `worker/`, `copaw/`, `hermes/`, `o
 
 **Bug Fixes**
 
+- **Worker config sync stability**: Merge remote `openclaw.json` updates without overwriting the live local Matrix token or rewriting unchanged configuration. ([4efb7f9](https://github.com/agentscope-ai/AgentTeams/commit/4efb7f9))
+- **Team deletion convergence**: Confirm ambiguous Tuwunel invite failures against current room membership so already-joined Manager users do not block Team finalizers. ([4efb7f9](https://github.com/agentscope-ai/AgentTeams/commit/4efb7f9))
 - **Team Worker room boundary convergence**: Remove Manager again after standalone Worker infrastructure reconciliation restores regular Team Worker personal-room membership. ([b5b0add](https://github.com/agentscope-ai/AgentTeams/commit/b5b0add))
 - **Team Worker reference enforcement**: Keep referenced Worker CRs protected during direct deletion and reject Team API members whose required role is empty. ([d96f1ed](https://github.com/agentscope-ai/AgentTeams/commit/d96f1ed))
 - **Team Worker room membership**: Force Manager out of regular Team Worker personal rooms when equal Matrix power levels prevent a normal kick. ([43545c2](https://github.com/agentscope-ai/AgentTeams/commit/43545c2))
