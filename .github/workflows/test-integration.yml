@@ -161,6 +161,7 @@ jobs:
           name: image-common-controller
           path: /tmp/agentteams-controller.tar.gz
           retention-days: 1
+          compression-level: 0
 
   # Step 1b: Build openclaw-base from this PR's source, but only when
   # openclaw-base/** actually changed. Otherwise downstream builds reuse the
@@ -210,6 +211,7 @@ jobs:
           name: image-openclaw-base
           path: /tmp/agentteams-openclaw-base.tar.gz
           retention-days: 1
+          compression-level: 0
 
   # Step 2: Build downstream images in parallel (all depend on agentteams-controller;
   # manager and worker additionally depend on openclaw-base when it was rebuilt).
@@ -312,6 +314,7 @@ jobs:
           name: ${{ matrix.artifact }}
           path: /tmp/agentteams-${{ matrix.target }}.tar.gz
           retention-days: 1
+          compression-level: 0
 
   # Step 3: Run test shards in parallel, each on its own runner with isolated cluster
   integration-tests:

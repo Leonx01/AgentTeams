@@ -98,6 +98,21 @@ runtime_switch_missing_images=$(jq -r '
 [ -z "${runtime_switch_missing_images}" ] || \
     fail "test 23 shards must load both openclaw and copaw images: ${runtime_switch_missing_images}"
 
+runtime_switch_shards=$(jq '[.matrix[] | select((.tests | index("23")) != null)] | length' "${MATRIX_FILE}")
+[ "${runtime_switch_shards}" -eq 1 ] || \
+    fail "test 23 must run exactly once because it covers both runtimes itself (found ${runtime_switch_shards})"
+
+unnecessary_worker_images=$(jq -r '
+    .matrix[]
+    | select(
+        (.tests | index("23")) == null and
+        (.worker_images != [.worker_runtime])
+    )
+    | "\(.shard)/\(.manager_runtime)/\(.worker_runtime)=\(.worker_images | join(","))"
+' "${MATRIX_FILE}")
+[ -z "${unnecessary_worker_images}" ] || \
+    fail "non-runtime-switch shards must load only their selected Worker image: ${unnecessary_worker_images}"
+
 for runtime in openclaw copaw hermes; do
     grep -Fq "if: contains(matrix.worker_images, '${runtime}')" "${WORKFLOW_FILE}" || \
         fail "workflow does not conditionally download the ${runtime} Worker image"
@@ -108,5 +123,7 @@ grep -Fq 'AGENTTEAMS_INSTALL_PRELOADED_WORKER_IMAGES: "1"' "${WORKFLOW_FILE}" ||
     fail "workflow does not enable preloaded Worker image mode"
 grep -Fq 'AGENTTEAMS_INSTALL_PRELOADED_WORKER_IMAGES:-0' "${INSTALLER_FILE}" || \
     fail "installer does not support preloaded Worker image mode"
+[ "$(grep -Fc 'compression-level: 0' "${WORKFLOW_FILE}")" -ge 3 ] || \
+    fail "all image artifacts must disable redundant ZIP compression"
 
 echo "Integration coverage matrix checks passed."

@@ -48,10 +48,10 @@
     },
     {
       "shard": "controller-cr",
-      "tests": ["15", "17", "18", "19", "20", "22", "23", "24", "25", "100"],
+      "tests": ["15", "17", "18", "19", "20", "22", "24", "25", "100"],
       "manager_runtime": "openclaw",
       "worker_runtime": "openclaw",
-      "worker_images": ["openclaw", "copaw"],
+      "worker_images": ["openclaw"],
       "requires_secret": false
     },
     {
@@ -72,10 +72,10 @@
     },
     {
       "shard": "controller-cr",
-      "tests": ["15", "17", "18", "19", "20", "22", "23", "24", "25", "100"],
+      "tests": ["15", "17", "18", "19", "20", "22", "24", "25", "100"],
       "manager_runtime": "copaw",
       "worker_runtime": "copaw",
-      "worker_images": ["openclaw", "copaw"],
+      "worker_images": ["copaw"],
       "requires_secret": false
     },
     {
@@ -87,6 +87,14 @@
       "requires_secret": false
     },
     {
+      "shard": "controller-cr-runtime-switch",
+      "tests": ["23"],
+      "manager_runtime": "copaw",
+      "worker_runtime": "copaw",
+      "worker_images": ["openclaw", "copaw"],
+      "requires_secret": false
+    },
+    {
       "shard": "llm-interaction",
       "tests": ["01", "02", "03", "04", "05", "06"],
       "manager_runtime": "copaw",
@@ -104,10 +112,10 @@
     },
     {
       "shard": "controller-cr",
-      "tests": ["15", "17", "18", "19", "20", "22", "23", "24", "25", "100"],
+      "tests": ["15", "17", "18", "19", "20", "22", "24", "25", "100"],
       "manager_runtime": "copaw",
       "worker_runtime": "hermes",
-      "worker_images": ["openclaw", "copaw", "hermes"],
+      "worker_images": ["hermes"],
       "requires_secret": false
     }
   ]
