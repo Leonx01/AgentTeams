@@ -1,0 +1,104 @@
+{
+  "required_tests": [
+    "01",
+    "02",
+    "03",
+    "04",
+    "05",
+    "06",
+    "14",
+    "15",
+    "17",
+    "18",
+    "19",
+    "20",
+    "21",
+    "22",
+    "23",
+    "24",
+    "25",
+    "100"
+  ],
+  "required_runtime_pairs": [
+    "copaw/copaw",
+    "copaw/hermes",
+    "openclaw/openclaw"
+  ],
+  "required_shards_per_runtime_pair": [
+    "llm-interaction",
+    "llm-interaction-2",
+    "controller-cr"
+  ],
+  "matrix": [
+    {
+      "shard": "llm-interaction",
+      "tests": ["01", "02", "03", "04", "05", "06"],
+      "manager_runtime": "openclaw",
+      "worker_runtime": "openclaw",
+      "requires_secret": true
+    },
+    {
+      "shard": "llm-interaction-2",
+      "tests": ["14"],
+      "manager_runtime": "openclaw",
+      "worker_runtime": "openclaw",
+      "requires_secret": true
+    },
+    {
+      "shard": "controller-cr",
+      "tests": ["15", "17", "18", "19", "20", "22", "23", "24", "25", "100"],
+      "manager_runtime": "openclaw",
+      "worker_runtime": "openclaw",
+      "requires_secret": false
+    },
+    {
+      "shard": "llm-interaction",
+      "tests": ["01", "02", "03", "04", "05", "06"],
+      "manager_runtime": "copaw",
+      "worker_runtime": "copaw",
+      "requires_secret": true
+    },
+    {
+      "shard": "llm-interaction-2",
+      "tests": ["14"],
+      "manager_runtime": "copaw",
+      "worker_runtime": "copaw",
+      "requires_secret": true
+    },
+    {
+      "shard": "controller-cr",
+      "tests": ["15", "17", "18", "19", "20", "22", "23", "24", "25", "100"],
+      "manager_runtime": "copaw",
+      "worker_runtime": "copaw",
+      "requires_secret": false
+    },
+    {
+      "shard": "controller-cr-2",
+      "tests": ["21"],
+      "manager_runtime": "copaw",
+      "worker_runtime": "copaw",
+      "requires_secret": false
+    },
+    {
+      "shard": "llm-interaction",
+      "tests": ["01", "02", "03", "04", "05", "06"],
+      "manager_runtime": "copaw",
+      "worker_runtime": "hermes",
+      "requires_secret": true
+    },
+    {
+      "shard": "llm-interaction-2",
+      "tests": ["14"],
+      "manager_runtime": "copaw",
+      "worker_runtime": "hermes",
+      "requires_secret": true
+    },
+    {
+      "shard": "controller-cr",
+      "tests": ["15", "17", "18", "19", "20", "22", "23", "24", "25", "100"],
+      "manager_runtime": "copaw",
+      "worker_runtime": "hermes",
+      "requires_secret": false
+    }
+  ]
+}

@@ -62,16 +62,13 @@ permissions:
   contents: read
   pull-requests: read
 
+concurrency:
+  group: integration-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
-  # Tests that do not require a GitHub token, split into four shards for parallel execution
-  # Shard A: LLM interaction tests (sequential dependency: 02 creates alice → 03-06 use alice)
-  # Shard B: LLM interaction tests 2 (task assignment with LLM)
-  # Shard C: Controller/CR tests (independent, no cross-test dependencies)
-  # Shard D: Controller/CR tests 2 (team project DAG)
-  SHARD_A_TESTS: "01 02 03 04 05 06"
-  SHARD_B_TESTS: "14"
-  SHARD_C_TESTS: "15 17 18 19 20 22 23 24 25 100"
-  SHARD_D_TESTS: "21"
+  # Kept for release-baseline runs that check out an older tag without the
+  # current declarative matrix file.
   NON_GITHUB_TESTS: "01 02 03 04 05 06 14 15 17 18 19 20 21 22 23 24 25 100"
 
 jobs:
@@ -117,24 +114,20 @@ jobs:
         env:
           UNTRUSTED_PR: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.actor == 'dependabot[bot]') }}
         run: |
-          MATRIX='[
-            {"shard":"llm-interaction","filter_env":"SHARD_A_TESTS","manager_runtime":"openclaw","worker_runtime":"openclaw","requires_secret":true},
-            {"shard":"llm-interaction-2","filter_env":"SHARD_B_TESTS","manager_runtime":"openclaw","worker_runtime":"openclaw","requires_secret":true},
-            {"shard":"controller-cr","filter_env":"SHARD_C_TESTS","manager_runtime":"openclaw","worker_runtime":"openclaw","requires_secret":false},
-            {"shard":"llm-interaction","filter_env":"SHARD_A_TESTS","manager_runtime":"copaw","worker_runtime":"copaw","requires_secret":true},
-            {"shard":"llm-interaction-2","filter_env":"SHARD_B_TESTS","manager_runtime":"copaw","worker_runtime":"copaw","requires_secret":true},
-            {"shard":"controller-cr","filter_env":"SHARD_C_TESTS","manager_runtime":"copaw","worker_runtime":"copaw","requires_secret":false},
-            {"shard":"controller-cr-2","filter_env":"SHARD_D_TESTS","manager_runtime":"copaw","worker_runtime":"copaw","requires_secret":false},
-            {"shard":"llm-interaction","filter_env":"SHARD_A_TESTS","manager_runtime":"copaw","worker_runtime":"hermes","requires_secret":true},
-            {"shard":"llm-interaction-2","filter_env":"SHARD_B_TESTS","manager_runtime":"copaw","worker_runtime":"hermes","requires_secret":true},
-            {"shard":"controller-cr","filter_env":"SHARD_C_TESTS","manager_runtime":"copaw","worker_runtime":"hermes","requires_secret":false}
-          ]'
+          MATRIX=$(jq -c '.matrix' tests/integration-test-matrix.json)
           if [ "$UNTRUSTED_PR" = "true" ]; then
             MATRIX=$(echo "$MATRIX" | jq -c '[.[] | select(.requires_secret == false) | del(.requires_secret)]')
           else
             MATRIX=$(echo "$MATRIX" | jq -c '[.[] | del(.requires_secret)]')
           fi
           echo "matrix={\"include\":$MATRIX}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate integration test orchestration
+        run: |
+          bash tests/check-integration-matrix.sh
+          bash tests/check-integration-test-plan.sh
+          bash tests/check-matrix-wait-helpers.sh
+          bash -n tests/run-all-tests.sh tests/test-*.sh tests/lib/*.sh
 
   # Step 1a: Build the shared base image (agentteams-controller)
   build-base:
@@ -163,7 +156,7 @@ jobs:
       - name: Upload image
         uses: actions/upload-artifact@v4
         with:
-          name: image-controller
+          name: image-common-controller
           path: /tmp/agentteams-controller.tar.gz
           retention-days: 1
 
@@ -228,9 +221,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
-        target: [embedded, manager, manager-copaw, worker, copaw-worker, hermes-worker]
+        include:
+          - target: embedded
+            artifact: image-common-embedded
+          - target: manager
+            artifact: image-manager-openclaw
+          - target: manager-copaw
+            artifact: image-manager-copaw
+          - target: worker
+            artifact: image-worker-openclaw
+          - target: copaw-worker
+            artifact: image-worker-copaw
+          - target: hermes-worker
+            artifact: image-worker-hermes
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -241,7 +246,7 @@ jobs:
       - name: Download controller image
         uses: actions/download-artifact@v4
         with:
-          name: image-controller
+          name: image-common-controller
           path: /tmp
 
       - name: Load controller image
@@ -302,7 +307,7 @@ jobs:
       - name: Upload image
         uses: actions/upload-artifact@v4
         with:
-          name: image-${{ matrix.target }}
+          name: ${{ matrix.artifact }}
           path: /tmp/agentteams-${{ matrix.target }}.tar.gz
           retention-days: 1
 
@@ -311,13 +316,13 @@ jobs:
     needs: [detect-changes, build-images]
     if: always() && needs.detect-changes.result == 'success' && needs.build-images.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     permissions:
       contents: write
       pull-requests: write
       actions: read
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix: ${{ fromJSON(needs.detect-changes.outputs.test_matrix) }}
 
     steps:
@@ -326,25 +331,47 @@ jobs:
         with:
           tool-cache: false
           android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          swap-storage: true
+          dotnet: false
+          haskell: false
+          large-packages: false
+          swap-storage: false
 
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download all images
+      - name: Download common images
         uses: actions/download-artifact@v4
         with:
-          pattern: image-*
-          path: /tmp/images
+          pattern: image-common-*
+          path: /tmp/images/common
+          merge-multiple: true
+
+      - name: Download Manager image
+        uses: actions/download-artifact@v4
+        with:
+          name: image-manager-${{ matrix.manager_runtime }}
+          path: /tmp/images/manager
+
+      - name: Download Worker image
+        uses: actions/download-artifact@v4
+        with:
+          name: image-worker-${{ matrix.worker_runtime }}
+          path: /tmp/images/worker
 
       - name: Load images
         run: |
-          for f in /tmp/images/image-*/*.tar.gz; do
-            gunzip -c "$f" | docker load
-          done
+          set -euo pipefail
+          IMAGE_COUNT=$(find /tmp/images -type f -name '*.tar.gz' | wc -l | tr -d ' ')
+          if [ "${IMAGE_COUNT}" -ne 4 ]; then
+            echo "Expected 4 image archives (controller, embedded, manager, worker), found ${IMAGE_COUNT}" >&2
+            find /tmp/images -maxdepth 3 -type f -print >&2
+            exit 1
+          fi
+          find /tmp/images -type f -name '*.tar.gz' -print0 \
+            | while IFS= read -r -d '' image; do
+                echo "Loading ${image}"
+                gunzip -c "${image}" | docker load
+              done
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y jq curl unzip
@@ -356,6 +383,9 @@ jobs:
           AGENTTEAMS_LLM_PROVIDER: qwen
           AGENTTEAMS_DEFAULT_MODEL: ${{ inputs.model || 'qwen3.6-plus' }}
           AGENTTEAMS_MANAGER_RUNTIME: ${{ matrix.manager_runtime }}
+          # A manual filter can replace a controller shard with an LLM test, so
+          # keep Manager setup enabled for all manual overrides.
+          AGENTTEAMS_TEST_REQUIRES_MANAGER_AGENT: ${{ github.event.inputs.test_filter != '' || !startsWith(matrix.shard, 'controller-cr') }}
           # Propagate the worker runtime to worker-creating tests too. Without
           # this the apply-zip path (test-15) silently falls back to openclaw
           # on the copaw and hermes matrix entries because the controller's
@@ -366,7 +396,7 @@ jobs:
         run: |
           FILTER="${{ github.event.inputs.test_filter }}"
           if [ -z "$FILTER" ]; then
-            FILTER="${{ env[matrix.filter_env] }}"
+            FILTER="${{ join(matrix.tests, ' ') }}"
           fi
           AGENTTEAMS_VERSION=v1.2.0-beta.1 SKIP_BUILD=1 make test-embedded \
             TEST_FILTER="$FILTER"
@@ -405,7 +435,7 @@ jobs:
           # Collect current summary across all tests that ran
           FILTER="${{ github.event.inputs.test_filter }}"
           if [ -z "$FILTER" ]; then
-            FILTER="${{ env[matrix.filter_env] }}"
+            FILTER="${{ join(matrix.tests, ' ') }}"
           fi
           TEST_NAMES=$(echo "$FILTER" | tr ' ' '\n' | while read n; do
             f=$(ls tests/output/metrics-*${n}*.json 2>/dev/null | head -1)
@@ -580,7 +610,7 @@ jobs:
         run: |
           echo "### Integration Test Summary" >> $GITHUB_STEP_SUMMARY
           echo "- Shard: \`${{ matrix.shard }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Tests: \`${{ env[matrix.filter_env] }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Tests: \`${{ github.event.inputs.test_filter || join(matrix.tests, ' ') }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Manager Runtime: \`${{ matrix.manager_runtime }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Worker Runtime: \`${{ matrix.worker_runtime }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Model: \`${{ inputs.model || 'qwen3.6-plus' }}\`" >> $GITHUB_STEP_SUMMARY

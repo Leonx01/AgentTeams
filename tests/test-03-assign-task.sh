@@ -39,39 +39,62 @@ wait_for_manager_agent_ready 300 "${DM_ROOM}" "${ADMIN_TOKEN}" || {
 # Alice container should be running from test-02; wait to ensure it's up before snapshot
 wait_for_worker_container "alice" 60
 METRICS_BASELINE=$(snapshot_baseline "alice")
+TASK_ID="assign-task-$(date +%s)-$$"
+TASK_DIR="shared/tasks/${TASK_ID}"
+TASK_SPEC="${TASK_DIR}/spec.md"
+TASK_RESULT="${TASK_DIR}/result.md"
+SPEC_MARKER="TASK_SPEC_${TASK_ID}"
+RESULT_MARKER="TASK_RESULT_${TASK_ID}"
+
+minio_setup
+_cleanup_task_artifacts() {
+    exec_in_manager mc rm -r --force \
+        "$(minio_storage_prefix)/${TASK_DIR}/" >/dev/null 2>&1 || true
+}
+trap _cleanup_task_artifacts EXIT
+
 MANAGER_BASELINE_EVENT=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager")
 matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" \
-    "Please assign Alice a task: Create a simple README.md for a hello-world project. The README should include project name, description, and usage instructions."
+    "Assign Alice this bounded task with ID ${TASK_ID}:
+1. Create the task brief '${TASK_SPEC}' containing exactly '${SPEC_MARKER}'.
+2. Ask Alice to read that brief and write '${TASK_RESULT}' containing exactly '${RESULT_MARKER}'.
+3. Reply with the task ID after assignment.
+
+Do not add other deliverables."
 
 log_info "Waiting for Manager to process task..."
-REPLY=$(matrix_wait_for_reply_since "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager" "${MANAGER_BASELINE_EVENT}" 180 \
-    "${ADMIN_TOKEN}" "${DM_ROOM}" "Please check if the task assignment has been processed.")
+REPLY=$(matrix_wait_for_reply_matching_since "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager" \
+    "${MANAGER_BASELINE_EVENT}" "${TASK_ID}" 180 \
+    "${ADMIN_TOKEN}" "${DM_ROOM}" "Please continue task ${TASK_ID}.")
 
 assert_not_empty "${REPLY}" "Manager acknowledged task assignment"
+assert_contains "${REPLY}" "${TASK_ID}" "Manager acknowledgment is correlated to this task"
+if [ -z "${REPLY}" ]; then
+    dump_manager_dm_messages "${ADMIN_TOKEN}" "${DM_ROOM}" "${TASK_ID} acknowledgment missing"
+    test_teardown "03-assign-task"
+    test_summary
+    exit 1
+fi
 
 log_section "Verify Task in MinIO"
 
-minio_setup
+if minio_wait_for_file "${TASK_SPEC}" 120; then
+    SPEC_CONTENT=$(minio_read_file "${TASK_SPEC}")
+    assert_contains "${SPEC_CONTENT}" "${SPEC_MARKER}" \
+        "Manager created the correlated task brief"
+else
+    log_fail "Task brief was not created within 120s: ${TASK_SPEC}"
+fi
 
-# Wait for task brief to appear
-log_info "Waiting for task brief in MinIO..."
-TASKS=""
-for _ in $(seq 1 18); do
-    TASKS=$(minio_list_dir "shared/tasks/" 2>/dev/null || echo "")
-    [ -n "${TASKS}" ] && break
-    sleep 5
-done
-assert_not_empty "${TASKS}" "Task directory created in MinIO"
+log_section "Verify Worker Completion"
 
-log_section "Wait for Worker Completion"
-
-# Wait for Worker to complete (up to 5 minutes)
-log_info "Waiting for Worker Alice to complete the task..."
-sleep 60
-
-# Check for result file
-TASKS_LIST=$(minio_list_dir "shared/tasks/" 2>/dev/null)
-log_info "Tasks directory contents: ${TASKS_LIST}"
+if minio_wait_for_file "${TASK_RESULT}" 300; then
+    RESULT_CONTENT=$(minio_read_file "${TASK_RESULT}")
+    assert_contains "${RESULT_CONTENT}" "${RESULT_MARKER}" \
+        "Alice completed the correlated task"
+else
+    log_fail "Alice result was not created within 300s: ${TASK_RESULT}"
+fi
 
 log_section "Collect Metrics"
 wait_for_worker_session_stable "alice" 5 120

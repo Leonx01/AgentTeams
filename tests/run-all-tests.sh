@@ -7,6 +7,7 @@
 #   ./tests/run-all-tests.sh --skip-build          # Use existing images
 #   ./tests/run-all-tests.sh --test-filter "01 02"  # Run specific tests only
 #   ./tests/run-all-tests.sh --use-existing         # Run against already-installed Manager
+#   ./tests/run-all-tests.sh --test-filter "01 02" --list-tests
 
 set -e
 
@@ -20,7 +21,9 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SKIP_BUILD=false
 USE_EXISTING=false
 TEST_FILTER=""
+LIST_TESTS=false
 AGENTTEAMS_VERSION="${AGENTTEAMS_VERSION:-latest}"
+TEST_FAIL_FAST="${TEST_FAIL_FAST:-1}"
 
 # Test environment variables
 export TEST_ADMIN_USER="${TEST_ADMIN_USER:-admin}"
@@ -38,6 +41,7 @@ while [[ $# -gt 0 ]]; do
         --skip-build) SKIP_BUILD=true; shift ;;
         --use-existing) USE_EXISTING=true; SKIP_BUILD=true; shift ;;
         --test-filter) TEST_FILTER="$2"; shift 2 ;;
+        --list-tests) LIST_TESTS=true; shift ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -129,6 +133,34 @@ _expand_controller_cr_filter_for_ci() {
     printf '%s\n' "${expanded}"
 }
 
+TESTS=()
+CLEANUP_TEST=""
+
+_collect_test_files() {
+    local test_file test_num
+
+    TESTS=()
+    CLEANUP_TEST=""
+
+    while IFS= read -r test_file; do
+        test_num=$(basename "${test_file}" | grep -o '[0-9]\+')
+        if [ -n "${TEST_FILTER}" ] && ! _filter_has_test "${TEST_FILTER}" "${test_num}"; then
+            continue
+        fi
+
+        if [ "${test_num}" = "100" ]; then
+            CLEANUP_TEST="${test_file}"
+        else
+            TESTS+=("${test_file}")
+        fi
+    done < <(find "${SCRIPT_DIR}" -maxdepth 1 -type f -name 'test-[0-9]*.sh' -print | sort -V)
+
+    if [ "${#TESTS[@]}" -eq 0 ] && [ -z "${CLEANUP_TEST}" ]; then
+        error "No integration tests matched filter: ${TEST_FILTER:-<all>}"
+        return 1
+    fi
+}
+
 # pull_request_target runs the workflow definition from the base branch, so a PR
 # that only updates SHARD_C_TESTS would not exercise newly added tests until
 # after merge. The checked-out test runner is from the PR HEAD, so expand the
@@ -139,6 +171,18 @@ if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -n "${TEST_FILTER}" ]; then
         log "Expanded controller-cr test filter: ${TEST_FILTER} -> ${EXPANDED_TEST_FILTER}"
         TEST_FILTER="${EXPANDED_TEST_FILTER}"
     fi
+fi
+
+_collect_test_files
+
+if [ "${LIST_TESTS}" = true ]; then
+    for test_file in "${TESTS[@]}"; do
+        basename "${test_file}"
+    done
+    if [ -n "${CLEANUP_TEST}" ]; then
+        basename "${CLEANUP_TEST}"
+    fi
+    exit 0
 fi
 
 cleanup() {
@@ -253,16 +297,16 @@ _setup_manager_identity() {
 
     local admin_login admin_token dm_room manager_user
     admin_login=$(matrix_login "${TEST_ADMIN_USER}" "${TEST_ADMIN_PASSWORD}" 2>/dev/null) || {
-        log "WARNING: Could not login as admin for identity setup"
-        return 0
+        error "Could not login as admin for Manager identity setup"
+        return 1
     }
     admin_token=$(echo "${admin_login}" | jq -r '.access_token')
     manager_user="@manager:${TEST_MATRIX_DOMAIN}"
 
     dm_room=$(matrix_find_dm_room "${admin_token}" "${manager_user}" 2>/dev/null || true)
     if [ -z "${dm_room}" ]; then
-        log "WARNING: No DM room found for identity setup"
-        return 0
+        error "No Manager DM room found for identity setup"
+        return 1
     fi
 
     # Check if identity is already configured
@@ -279,8 +323,8 @@ _setup_manager_identity() {
 
     # Wait for Manager Agent to be ready
     wait_for_manager_agent_ready 300 "${dm_room}" "${admin_token}" || {
-        log "WARNING: Manager not ready for identity setup"
-        return 0
+        error "Manager was not ready for identity setup within 300s"
+        return 1
     }
 
     # Verify Gateway consumer and AI route authorization before sending messages
@@ -371,11 +415,18 @@ Please update your SOUL.md with these preferences, then run: touch ~/soul-config
         elapsed=$((elapsed + 5))
     done
 
-    log "WARNING: Manager did not complete identity setup within 120s (tests will continue)"
-    return 0
+    error "Manager did not complete identity setup within 120s"
+    return 1
 }
 
-_setup_manager_identity
+case "${AGENTTEAMS_TEST_REQUIRES_MANAGER_AGENT:-1}" in
+    1|true|TRUE|yes|YES)
+        _setup_manager_identity
+        ;;
+    *)
+        log "Skipping Manager-agent setup for this controller-only test plan"
+        ;;
+esac
 
 # ============================================================
 # Step 4: Run test cases
@@ -388,25 +439,18 @@ TOTAL_PASS=0
 TOTAL_FAIL=0
 RESULTS=()
 
-# Determine which tests to run
-TESTS=()
-for test_file in "${SCRIPT_DIR}"/test-*.sh; do
-    test_num=$(basename "${test_file}" | grep -o '[0-9]\+')
-    if [ -n "${TEST_FILTER}" ]; then
-        if echo "${TEST_FILTER}" | grep -qw "${test_num}"; then
-            TESTS+=("${test_file}")
-        fi
-    else
-        TESTS+=("${test_file}")
-    fi
-done
-
 for test_file in "${TESTS[@]}"; do
     test_name=$(basename "${test_file}" .sh)
     log "Running: ${test_name}"
 
-    # Wait for Manager to finish processing previous test before starting next
-    wait_for_session_stable 10 120
+    # LLM shards share one Manager session and must not overlap turns.
+    # Controller-only shards do not use the Manager Agent, so waiting for its
+    # session would add delay without protecting any test dependency.
+    case "${AGENTTEAMS_TEST_REQUIRES_MANAGER_AGENT:-1}" in
+        1|true|TRUE|yes|YES)
+            wait_for_session_stable 10 120
+            ;;
+    esac
 
     if bash "${test_file}"; then
         RESULTS+=("PASS: ${test_name}")
@@ -414,10 +458,32 @@ for test_file in "${TESTS[@]}"; do
     else
         RESULTS+=("FAIL: ${test_name}")
         TOTAL_FAIL=$((TOTAL_FAIL + 1))
+        case "${TEST_FAIL_FAST}" in
+            1|true|TRUE|yes|YES)
+                log "Stopping after first test failure (TEST_FAIL_FAST=${TEST_FAIL_FAST})"
+                break
+                ;;
+        esac
     fi
 
     echo ""
 done
+
+# The bulk cleanup case is selected explicitly by the shard, but it must always
+# run last, including after a fail-fast stop. This keeps failure feedback fast
+# without leaving resources behind for artifact collection or local reruns.
+if [ -n "${CLEANUP_TEST}" ]; then
+    test_name=$(basename "${CLEANUP_TEST}" .sh)
+    log "Running: ${test_name}"
+    if bash "${CLEANUP_TEST}"; then
+        RESULTS+=("PASS: ${test_name}")
+        TOTAL_PASS=$((TOTAL_PASS + 1))
+    else
+        RESULTS+=("FAIL: ${test_name}")
+        TOTAL_FAIL=$((TOTAL_FAIL + 1))
+    fi
+    echo ""
+fi
 
 # ============================================================
 # Step 5: Report results

@@ -291,13 +291,37 @@ matrix_wait_for_reply_matching() {
     local nudge_room="${7:-}"
     local nudge_message="${8:-}"
     local nudge_interval="${9:-600}"
-    local elapsed=0
 
     # Snapshot the baseline event_id so we only consider NEW messages.
     local baseline_event
     baseline_event=$(matrix_read_messages "${token}" "${room_id}" 20 2>/dev/null | \
         jq -r --arg user "${from_user}" \
         '[.chunk[] | select(.sender | startswith($user)) | select(.type == "m.room.message") | select(.content.body != null) | .event_id] | first // ""' 2>/dev/null)
+
+    matrix_wait_for_reply_matching_since \
+        "${token}" "${room_id}" "${from_user}" "${baseline_event}" "${pattern}" "${timeout}" \
+        "${nudge_token}" "${nudge_room}" "${nudge_message}" "${nudge_interval}"
+}
+
+# Wait for a matching reply after a caller-supplied baseline event.
+# Capture the baseline before sending the request to avoid missing very fast
+# replies between the send and the start of the polling helper.
+#
+# Usage: matrix_wait_for_reply_matching_since <token> <room_id> <from_user_prefix> \
+#        <baseline_event> <pattern> [timeout_seconds] \
+#        [nudge_token nudge_room nudge_message nudge_interval]
+matrix_wait_for_reply_matching_since() {
+    local token="$1"
+    local room_id="$2"
+    local from_user="$3"
+    local baseline_event="$4"
+    local pattern="$5"
+    local timeout="${6:-180}"
+    local nudge_token="${7:-}"
+    local nudge_room="${8:-}"
+    local nudge_message="${9:-}"
+    local nudge_interval="${10:-600}"
+    local elapsed=0
 
     # Track which non-matching new replies we've already logged, to avoid
     # repeating them on every poll.

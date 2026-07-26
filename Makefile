@@ -698,9 +698,6 @@ wait-ready-embedded: ## Wait for embedded-mode services to be ready
 		AGENT=$$(docker ps --format '{{.Names}}' 2>/dev/null | grep -c '^agentteams-manager$$' || echo 0); \
 		if [ "$$MATRIX" = "200" ] && [ "$$MINIO" = "200" ] && [ "$$CONSOLE" = "200" ] && [ "$$AGENT" -ge 1 ]; then \
 			echo "==> All services ready (took $${ELAPSED}s)"; \
-			echo "==> Waiting 60s for Manager Agent initialization..."; \
-			sleep 60; \
-			echo "==> Manager Agent should be ready now"; \
 			exit 0; \
 		fi; \
 		sleep 5; \

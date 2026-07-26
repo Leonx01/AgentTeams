@@ -119,7 +119,7 @@ fi
 
 # Wait for the Controller API to reflect the update.
 log_info "Waiting for Worker CR to reflect skill change..."
-DEADLINE=$(( $(date +%s) + 120 ))
+DEADLINE=$(( $(date +%s) + 30 ))
 UPDATED_SKILLS=""
 while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
     UPDATED_SKILLS=$(_worker_skills_in_api "${TEST_WORKER}")
@@ -131,6 +131,18 @@ while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
 done
 
 log_info "Updated skills in Worker CR: ${UPDATED_SKILLS}"
+if ! echo "${UPDATED_SKILLS}" | jq -e 'index("git-delegation")' >/dev/null 2>&1 \
+    || echo "${UPDATED_SKILLS}" | jq -e 'index("github-operations")' >/dev/null 2>&1; then
+    log_info "Update command output: ${UPDATE_OUTPUT}"
+    log_info "Current Worker resource:"
+    exec_in_agent agt get workers "${TEST_WORKER}" -o json 2>/dev/null || true
+    log_info "Recent Controller logs:"
+    docker logs --tail 200 "${TEST_CONTROLLER_CONTAINER}" 2>&1 || true
+    log_fail "Accepted skills update was not observable in the Worker CR within 30s"
+    test_teardown "24-skills-management"
+    test_summary
+    exit 1
+fi
 
 # ============================================================
 # Section 4: Verify post-update state

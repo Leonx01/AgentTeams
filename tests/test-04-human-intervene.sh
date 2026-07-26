@@ -6,6 +6,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/test-helpers.sh"
 source "${SCRIPT_DIR}/lib/matrix-client.sh"
+source "${SCRIPT_DIR}/lib/minio-client.sh"
 source "${SCRIPT_DIR}/lib/agent-metrics.sh"
 
 test_setup "04-human-intervene"
@@ -37,35 +38,84 @@ wait_for_manager_agent_ready 300 "${DM_ROOM}" "${ADMIN_TOKEN}" || {
 # Alice container should be running from test-02/03; wait to ensure it's up before snapshot
 wait_for_worker_container "alice" 60
 METRICS_BASELINE=$(snapshot_baseline "alice")
-matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" \
-    "Ask Alice to write a Python script that prints 'Hello, World!' and saves it as hello.py."
+TASK_ID="human-intervene-$(date +%s)-$$"
+TASK_DIR="shared/tasks/${TASK_ID}"
+START_FILE="${TASK_DIR}/started.txt"
+RESULT_FILE="${TASK_DIR}/hello.py"
+ORIGINAL_MARKER="ORIGINAL_REQUIREMENT_${TASK_ID}"
+SUPPLEMENT_MARKER="SUPPLEMENT_REQUIREMENT_${TASK_ID}"
 
-log_info "Waiting for Manager to relay task..."
-sleep 20
+minio_setup
+_cleanup_task_artifacts() {
+    exec_in_manager mc rm -r --force \
+        "$(minio_storage_prefix)/${TASK_DIR}/" >/dev/null 2>&1 || true
+}
+trap _cleanup_task_artifacts EXIT
+
+MANAGER_BASELINE_EVENT=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager")
+matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" \
+    "Start task ${TASK_ID} with Alice. Ask her to:
+1. Write exactly '${ORIGINAL_MARKER}' to '${START_FILE}' when she starts.
+2. Prepare a Python hello-world script, but do not finalize it until I send a supplementary requirement.
+Reply with ${TASK_ID} after Alice has been assigned."
+
+log_info "Waiting for Manager to relay the original task..."
+ORIGINAL_REPLY=$(matrix_wait_for_reply_matching_since "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager" \
+    "${MANAGER_BASELINE_EVENT}" "${TASK_ID}" 180 \
+    "${ADMIN_TOKEN}" "${DM_ROOM}" "Please continue task ${TASK_ID}.")
+assert_not_empty "${ORIGINAL_REPLY}" "Manager acknowledged the original task"
+assert_contains "${ORIGINAL_REPLY}" "${TASK_ID}" \
+    "Original-task acknowledgment is correlated"
+if [ -z "${ORIGINAL_REPLY}" ]; then
+    dump_manager_dm_messages "${ADMIN_TOKEN}" "${DM_ROOM}" "${TASK_ID} original-task acknowledgment missing"
+    test_teardown "04-human-intervene"
+    test_summary
+    exit 1
+fi
+
+if minio_wait_for_file "${START_FILE}" 240; then
+    START_CONTENT=$(minio_read_file "${START_FILE}")
+    assert_contains "${START_CONTENT}" "${ORIGINAL_MARKER}" \
+        "Alice started the original task before human intervention"
+else
+    log_fail "Alice did not create the start marker within 240s: ${START_FILE}"
+    test_teardown "04-human-intervene"
+    test_summary
+    exit 1
+fi
 
 log_section "Send Supplementary Instruction"
 
-# Send supplementary instruction mid-task
+MANAGER_BASELINE_EVENT=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager")
 matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" \
-    "Additional requirement for Alice: the script should also accept a command line argument for the name, so it prints 'Hello, <name>!' instead."
+    "Supplement for task ${TASK_ID}: Alice must now finalize '${RESULT_FILE}' so it accepts an optional command-line name and prints 'Hello, <name>!'. The file must contain both marker comments '${ORIGINAL_MARKER}' and '${SUPPLEMENT_MARKER}'. Reply with ${TASK_ID} after relaying this update."
 
 log_info "Waiting for Manager to relay supplement..."
-REPLY=$(matrix_wait_for_reply "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager" 180 \
-    "${ADMIN_TOKEN}" "${DM_ROOM}" "Please check if the supplementary instruction has been processed.")
+REPLY=$(matrix_wait_for_reply_matching_since "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager" \
+    "${MANAGER_BASELINE_EVENT}" "${TASK_ID}" 180 \
+    "${ADMIN_TOKEN}" "${DM_ROOM}" "Please continue the supplement for ${TASK_ID}.")
 
 assert_not_empty "${REPLY}" "Manager acknowledged supplementary instruction"
+assert_contains "${REPLY}" "${TASK_ID}" \
+    "Supplement acknowledgment is correlated"
+if [ -z "${REPLY}" ]; then
+    dump_manager_dm_messages "${ADMIN_TOKEN}" "${DM_ROOM}" "${TASK_ID} supplement acknowledgment missing"
+    test_teardown "04-human-intervene"
+    test_summary
+    exit 1
+fi
 
 log_section "Verify Incorporation"
 
-# Wait for completion
-sleep 60
-
-# Read recent messages to verify both requirements were addressed
-MESSAGES=$(matrix_read_messages "${ADMIN_TOKEN}" "${DM_ROOM}" 20)
-log_info "Checking if final result includes both requirements..."
-
-# The result should reference both the original and supplementary requirements
-assert_not_empty "${MESSAGES}" "Room has messages from task processing"
+if minio_wait_for_file "${RESULT_FILE}" 300; then
+    RESULT_CONTENT=$(minio_read_file "${RESULT_FILE}")
+    assert_contains "${RESULT_CONTENT}" "${ORIGINAL_MARKER}" \
+        "Final result preserves the original requirement"
+    assert_contains "${RESULT_CONTENT}" "${SUPPLEMENT_MARKER}" \
+        "Final result incorporates the human supplement"
+else
+    log_fail "Final result was not created within 300s: ${RESULT_FILE}"
+fi
 
 log_section "Collect Metrics"
 wait_for_worker_session_stable "alice" 5 120

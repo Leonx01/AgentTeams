@@ -70,6 +70,7 @@ TEST_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-openclaw}"
 #
 # The runtime is explicit for the same reason: CI matrix runtime must win over
 # any rendered fallback text the Manager may have cached in its workspace.
+MANAGER_BASELINE_EVENT=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager")
 matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" \
     "Please create a new Worker now using these exact values — do not ask me to confirm any of them:
 - name: alice
@@ -91,7 +92,8 @@ log_info "Waiting for Manager to create Worker Alice..."
 # arrives 5-30s later. matrix_wait_for_reply_matching keeps reading new
 # Manager messages until one matches 'alice' (or until the 5min timeout),
 # while still logging the interim acks so the test artifact captures them.
-REPLY=$(matrix_wait_for_reply_matching "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager" "alice" 300 \
+REPLY=$(matrix_wait_for_reply_matching_since "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager" \
+    "${MANAGER_BASELINE_EVENT}" "alice" 300 \
     "${ADMIN_TOKEN}" "${DM_ROOM}" "Please check if the worker creation request has been processed.")
 
 log_section "Verify Manager Response"
@@ -100,6 +102,12 @@ log_info "Manager reply (first 500 chars): $(echo "${REPLY}" | head -c 500)"
 
 assert_not_empty "${REPLY}" "Manager replied to create worker request mentioning 'alice'"
 assert_contains_i "${REPLY}" "alice" "Reply mentions worker name 'alice'"
+if [ -z "${REPLY}" ]; then
+    dump_manager_dm_messages "${ADMIN_TOKEN}" "${DM_ROOM}" "alice creation reply missing"
+    test_teardown "02-create-worker"
+    test_summary
+    exit 1
+fi
 
 # Show error logs on failure for debugging
 if ! echo "${REPLY}" | grep -qi "alice" 2>/dev/null; then

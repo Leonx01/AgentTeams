@@ -64,12 +64,24 @@ make test SKIP_INSTALL=1
 # Run specific tests only
 ./tests/run-all-tests.sh --test-filter "01 02 03"
 
+# Inspect the deterministic execution order without starting containers
+./tests/run-all-tests.sh --test-filter "15 17 100" --list-tests
+
 # Run against an already-installed Manager
 ./tests/run-all-tests.sh --use-existing
 
 # Use a custom container name
 ./tests/run-all-tests.sh --container my-test-container
 ```
+
+The runner stops after the first failed case by default. If test 100 is part of
+the selected plan, it still runs last so resources are cleaned up. Set
+`TEST_FAIL_FAST=0` when a diagnostic run needs to collect every independent
+failure.
+
+The GitHub Actions runtime/shard coverage contract is declared in
+`integration-test-matrix.json`. Run `check-integration-matrix.sh` after changing
+test selection or runtime coverage.
 
 ## Required Environment Variables
 

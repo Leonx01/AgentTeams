@@ -30,6 +30,7 @@ REPO_PATH="/root/git-repos/collab-test-${TEST_RUN_ID}"
 FEATURE_BRANCH="feature/proposal-${TEST_RUN_ID}"
 REVIEW_BRANCH="review/proposal-${TEST_RUN_ID}"
 TEST_BRANCH="verify/proposal-${TEST_RUN_ID}"
+PROJECT_NAME="Project: git-collab-${TEST_RUN_ID}"
 
 log_section "Setup: Initialize Bare Git Repo"
 
@@ -52,6 +53,11 @@ docker exec "${TEST_CONTROLLER_CONTAINER}" bash -c "
     exit 1
 }
 log_pass "Bare git repo initialized at ${REPO_PATH}.git"
+
+_cleanup_git_repo() {
+    docker exec "${TEST_CONTROLLER_CONTAINER}" rm -rf "${REPO_PATH}.git" 2>/dev/null || true
+}
+trap _cleanup_git_repo EXIT
 
 # All git operations are delegated to the Manager, which runs them locally
 # inside the manager container — no network protocol needed, use local path directly.
@@ -104,7 +110,7 @@ Before starting any phase:
    - skills: github-operations, git-delegation
    - SOUL/role: 'Developer working on a shared git repo using git-delegation workflows'
    If a worker already exists, reuse it.
-2. Create a shared project room that includes alice, bob, charlie, and the human admin (use the create-project.sh script). All phase assignments and reports MUST happen in this project room — never in individual worker rooms.
+2. Create a shared project room named EXACTLY '${PROJECT_NAME}' that includes alice, bob, charlie, and the human admin (use the create-project.sh script). All phase assignments and reports MUST happen in this project room — never in individual worker rooms.
 
 Run the phases strictly in order, waiting for each phase's report before starting the next.
 
@@ -146,15 +152,17 @@ Run the phases strictly in order, waiting for each phase's report before startin
 - Commit 'verify: proposal review checklist' and push branch '${TEST_BRANCH}' to ${GIT_REPO_URL}
 - Report PHASE4_DONE
 
-When all 4 phases are done, post a final summary in the project room and @mention the human admin to notify them the workflow is complete."
+When all 4 phases are done, post exactly 'GIT_COLLAB_COMPLETE ${TEST_RUN_ID}' in the project room and @mention the human admin."
 
 # Snapshot before first LLM interaction
 METRICS_BASELINE=$(snapshot_baseline "alice" "bob" "charlie")
 
+MANAGER_BASELINE_EVENT=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager")
 matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" "${TASK_DESCRIPTION}"
 
 log_info "Waiting for Manager to acknowledge and start coordination..."
-REPLY=$(matrix_wait_for_reply "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager" 300 \
+REPLY=$(matrix_wait_for_reply_since "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager" \
+    "${MANAGER_BASELINE_EVENT}" 300 \
     "${ADMIN_TOKEN}" "${DM_ROOM}" "Please check if the git collaboration task has been processed.")
 
 if [ -n "${REPLY}" ]; then
@@ -163,7 +171,7 @@ else
     log_info "No explicit acknowledgment (Manager may have started processing directly)"
 fi
 
-log_section "Wait for Workflow Completion (up to 30 minutes)"
+log_section "Wait for Workflow State"
 
 # Get Manager's Matrix token (retry until openclaw.json is written)
 log_info "Waiting for Manager token (timeout: 120s)..."
@@ -176,34 +184,106 @@ while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
     sleep 5
 done
 assert_not_empty "${MANAGER_TOKEN}" "Manager Matrix token available"
-
-log_info "Waiting for project room to be created (timeout: 900s)..."
-PROJECT_ROOM=""
-DEADLINE=$(( $(date +%s) + 900 ))
-while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
-    PROJECT_ROOM=$(matrix_find_room_by_name "${MANAGER_TOKEN}" "Project:" 2>/dev/null || true)
-    [ -n "${PROJECT_ROOM}" ] && break
-    sleep 10
-done
-assert_not_empty "${PROJECT_ROOM}" "Project room created by Manager"
-log_info "Project room: ${PROJECT_ROOM}"
-
-log_info "Waiting for Manager to post completion message in project room (timeout: 1800s)..."
-# First check if completion message was already posted
-COMPLETION_MSG=$(matrix_read_messages "${MANAGER_TOKEN}" "${PROJECT_ROOM}" 50 2>/dev/null | \
-    jq -r --arg u "@manager" '[.chunk[] | select(.sender | startswith($u)) | .content.body] | .[]' 2>/dev/null | \
-    grep -iE "complete|done|finished|已完成|完成|all.*phase|phase.*4|PHASE4" | head -1 || true)
-
-if [ -z "${COMPLETION_MSG}" ]; then
-    COMPLETION_MSG=$(matrix_wait_for_message_containing "${MANAGER_TOKEN}" "${PROJECT_ROOM}" "@manager" \
-        "complete\|done\|finished\|已完成\|完成\|all.*phase\|phase.*4\|PHASE4" 1800 \
-        "${ADMIN_TOKEN}" "${DM_ROOM}" \
-        "Please check the project room and continue coordinating the git collaboration workflow. If any phase is pending or a worker message was missed, please follow up." \
-        2>/dev/null || true)
+if [ -z "${MANAGER_TOKEN}" ]; then
+    test_teardown "14-git-collab"
+    test_summary
+    exit 1
 fi
 
-assert_not_empty "${COMPLETION_MSG}" "Manager posted completion message in project room"
-log_pass "Workflow complete — Manager's message: $(echo "${COMPLETION_MSG}" | head -c 200)"
+log_info "Waiting for the correlated project room (timeout: 300s)..."
+PROJECT_ROOM=""
+DEADLINE=$(( $(date +%s) + 300 ))
+while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
+    PROJECT_ROOM=$(matrix_find_room_by_name "${MANAGER_TOKEN}" "git-collab-${TEST_RUN_ID}" 2>/dev/null || true)
+    [ -n "${PROJECT_ROOM}" ] && break
+    sleep 5
+done
+assert_not_empty "${PROJECT_ROOM}" "Project room created by Manager"
+if [ -z "${PROJECT_ROOM}" ]; then
+    test_teardown "14-git-collab"
+    test_summary
+    exit 1
+fi
+log_info "Project room: ${PROJECT_ROOM}"
+
+PROJECT_BASELINE_EVENT=$(matrix_latest_reply_event "${MANAGER_TOKEN}" "${PROJECT_ROOM}" "@manager")
+
+log_info "Waiting for all three collaboration branches (timeout: 900s)..."
+DEADLINE=$(( $(date +%s) + 900 ))
+while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
+    if docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
+            show-ref --verify --quiet "refs/heads/${FEATURE_BRANCH}" \
+        && docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
+            show-ref --verify --quiet "refs/heads/${REVIEW_BRANCH}" \
+        && docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
+            show-ref --verify --quiet "refs/heads/${TEST_BRANCH}"; then
+        break
+    fi
+    sleep 10
+done
+
+if docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
+        show-ref --verify --quiet "refs/heads/${FEATURE_BRANCH}" \
+    && docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
+        show-ref --verify --quiet "refs/heads/${REVIEW_BRANCH}" \
+    && docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
+        show-ref --verify --quiet "refs/heads/${TEST_BRANCH}"; then
+    log_pass "Feature, review, and verification branches were pushed"
+else
+    log_info "Available refs:"
+    docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" show-ref 2>/dev/null || true
+    log_fail "Collaboration branches were not all available within 900s"
+    test_teardown "14-git-collab"
+    test_summary
+    exit 1
+fi
+
+FEATURE_CONTENT=$(docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
+    show "${FEATURE_BRANCH}:doc/proposal.md" 2>/dev/null || true)
+REVIEW_CONTENT=$(docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
+    show "${REVIEW_BRANCH}:reviews/proposal-review.md" 2>/dev/null || true)
+VERIFY_CONTENT=$(docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
+    show "${TEST_BRANCH}:verify/checklist.md" 2>/dev/null || true)
+
+assert_contains "${FEATURE_CONTENT}" "## Summary" \
+    "Alice incorporated Bob's requested Summary section"
+assert_contains "${FEATURE_CONTENT}" "## Goals" \
+    "Feature branch preserves the original Goals section"
+assert_contains "${REVIEW_CONTENT}" "Please add a ## Summary section" \
+    "Bob pushed the requested review"
+assert_contains_i "${VERIFY_CONTENT}" "summary" \
+    "Charlie verified the Summary requirement"
+assert_contains_i "${VERIFY_CONTENT}" "goals" \
+    "Charlie verified the Goals requirement"
+
+if docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
+        merge-base --is-ancestor "${FEATURE_BRANCH}" "${TEST_BRANCH}" 2>/dev/null; then
+    log_pass "Verification branch is based on Alice's updated feature branch"
+else
+    log_fail "Verification branch is not based on the updated feature branch"
+fi
+
+if [ "${TESTS_FAILED}" -gt 0 ]; then
+    test_teardown "14-git-collab"
+    test_summary
+    exit 1
+fi
+
+log_info "Waiting for the correlated completion marker (timeout: 300s)..."
+COMPLETION_MSG=$(matrix_read_messages "${MANAGER_TOKEN}" "${PROJECT_ROOM}" 50 2>/dev/null | \
+    jq -r --arg marker "GIT_COLLAB_COMPLETE ${TEST_RUN_ID}" \
+    '[.chunk[] | select(.sender | startswith("@manager")) | .content.body | select(contains($marker))] | first // empty' \
+    2>/dev/null || true)
+if [ -z "${COMPLETION_MSG}" ]; then
+    COMPLETION_MSG=$(matrix_wait_for_reply_matching_since \
+        "${MANAGER_TOKEN}" "${PROJECT_ROOM}" "@manager" "${PROJECT_BASELINE_EVENT}" \
+        "GIT_COLLAB_COMPLETE ${TEST_RUN_ID}" 300 \
+        "${ADMIN_TOKEN}" "${DM_ROOM}" \
+        "Please finish git collaboration ${TEST_RUN_ID} and post the exact completion marker." \
+        120 2>/dev/null || true)
+fi
+assert_not_empty "${COMPLETION_MSG}" \
+    "Manager posted the correlated completion marker in the project room"
 
 log_section "Collect Metrics"
 
@@ -218,7 +298,8 @@ save_metrics_file "$METRICS" "14-git-collab"
 
 log_section "Cleanup"
 
-docker exec "${TEST_CONTROLLER_CONTAINER}" rm -rf "${REPO_PATH}.git" 2>/dev/null || true
+_cleanup_git_repo
+trap - EXIT
 log_info "Removed bare git repo"
 
 test_teardown "14-git-collab"
