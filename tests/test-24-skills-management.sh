@@ -21,6 +21,7 @@ test_setup "24-skills-management"
 
 TEST_WORKER="test-skl-$$"
 STORAGE_PREFIX="${STORAGE_PREFIX:-${TEST_STORAGE_PREFIX:-agentteams/agentteams-storage}}"
+TEST_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-openclaw}"
 
 _cleanup() {
     log_info "Cleaning up: ${TEST_WORKER}"
@@ -46,7 +47,7 @@ _worker_skills_in_api() {
 log_section "Create Worker with --skills github-operations"
 
 CREATE_OUTPUT=$(exec_in_agent agt create worker --name "${TEST_WORKER}" \
-    --skills github-operations --no-wait 2>&1)
+    --runtime "${TEST_WORKER_RUNTIME}" --skills github-operations --no-wait 2>&1)
 CREATE_EXIT=$?
 if [ "${CREATE_EXIT}" -eq 0 ]; then
     log_pass "agt create worker --skills github-operations accepted"

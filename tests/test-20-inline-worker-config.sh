@@ -18,6 +18,7 @@ test_setup "20-inline-worker-config"
 TEST_WORKER="test-inline-$$"
 TEST_WORKER_OVERRIDE="test-inlover-$$"
 STORAGE_PREFIX="${STORAGE_PREFIX:-${TEST_STORAGE_PREFIX:-agentteams/agentteams-storage}}"
+TEST_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-openclaw}"
 
 # ---- Cleanup handler ----
 _cleanup() {
@@ -86,6 +87,7 @@ metadata:
   name: ${TEST_WORKER}
 spec:
   model: qwen3.5-plus
+  runtime: ${TEST_WORKER_RUNTIME}
   soul: |
 $(echo "${SOUL_CONTENT}" | sed 's/^/    /')
   agents: |
@@ -255,7 +257,8 @@ exec_in_manager bash -c "
   \"version\": 1,
   \"worker\": {
     \"suggested_name\": \"${TEST_WORKER_OVERRIDE}\",
-    \"model\": \"qwen3.5-plus\"
+    \"model\": \"qwen3.5-plus\",
+    \"runtime\": \"${TEST_WORKER_RUNTIME}\"
   },
   \"source\": {
     \"hostname\": \"integration-test\"
@@ -322,6 +325,7 @@ metadata:
   name: ${TEST_WORKER_OVERRIDE}
 spec:
   model: qwen3.5-plus
+  runtime: ${TEST_WORKER_RUNTIME}
   package: ${PKG_URI}
   soul: |
 $(echo "${OVERRIDE_SOUL}" | sed 's/^/    /')

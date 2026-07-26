@@ -17,6 +17,7 @@ source "${SCRIPT_DIR}/lib/higress-client.sh"
 test_setup "25-name-validation"
 
 TEST_VALID_NAME="test-namechk-$$"
+TEST_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-openclaw}"
 ACCEPTED_INVALID_NAMES=()
 
 _cleanup() {
@@ -141,7 +142,8 @@ fi
 # ============================================================
 log_section "Accept Valid Name"
 
-OUTPUT=$(exec_in_agent agt create worker --name "${TEST_VALID_NAME}" --no-wait 2>&1)
+OUTPUT=$(exec_in_agent agt create worker --name "${TEST_VALID_NAME}" \
+    --runtime "${TEST_WORKER_RUNTIME}" --no-wait 2>&1)
 EXIT_CODE=$?
 
 if [ "${EXIT_CODE}" -eq 0 ]; then

@@ -9,6 +9,10 @@ WORKFLOW_FILE="${SCRIPT_DIR}/../.github/workflows/test-integration.yml"
 INSTALLER_FILE="${SCRIPT_DIR}/../install/agentteams-install.sh"
 TEAM_CONFIG_TEST="${SCRIPT_DIR}/test-18-team-config-verify.sh"
 TEAM_ADMIN_TEST="${SCRIPT_DIR}/test-19-human-and-team-admin.sh"
+INLINE_CONFIG_TEST="${SCRIPT_DIR}/test-20-inline-worker-config.sh"
+DELETE_CLEANUP_TEST="${SCRIPT_DIR}/test-22-delete-worker-cleanup.sh"
+SKILLS_TEST="${SCRIPT_DIR}/test-24-skills-management.sh"
+NAME_VALIDATION_TEST="${SCRIPT_DIR}/test-25-name-validation.sh"
 
 fail() {
     echo "FAIL: $*" >&2
@@ -122,6 +126,25 @@ for test_file in "${TEAM_CONFIG_TEST}" "${TEAM_ADMIN_TEST}"; do
         fail "$(basename "${test_file}") must set every Team member Worker runtime explicitly"
 done
 
+for test_file in \
+    "${INLINE_CONFIG_TEST}" \
+    "${DELETE_CLEANUP_TEST}" \
+    "${SKILLS_TEST}" \
+    "${NAME_VALIDATION_TEST}"; do
+    grep -Fq 'TEST_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-openclaw}"' "${test_file}" || \
+        fail "$(basename "${test_file}") must derive Worker runtime from the matrix runtime"
+done
+[ "$(grep -Fc 'runtime: ${TEST_WORKER_RUNTIME}' "${INLINE_CONFIG_TEST}")" -ge 2 ] || \
+    fail "$(basename "${INLINE_CONFIG_TEST}") must set both YAML Worker runtimes explicitly"
+grep -Fq '\"runtime\": \"${TEST_WORKER_RUNTIME}\"' "${INLINE_CONFIG_TEST}" || \
+    fail "$(basename "${INLINE_CONFIG_TEST}") must set the package Worker runtime explicitly"
+[ "$(grep -Fc -- '--runtime "${TEST_WORKER_RUNTIME}"' "${DELETE_CLEANUP_TEST}")" -ge 2 ] || \
+    fail "$(basename "${DELETE_CLEANUP_TEST}") must set runtime on create and recreate"
+grep -Fq -- '--runtime "${TEST_WORKER_RUNTIME}"' "${SKILLS_TEST}" || \
+    fail "$(basename "${SKILLS_TEST}") must set runtime on Worker creation"
+grep -Fq -- '--runtime "${TEST_WORKER_RUNTIME}"' "${NAME_VALIDATION_TEST}" || \
+    fail "$(basename "${NAME_VALIDATION_TEST}") must set runtime on valid Worker creation"
+
 for runtime in openclaw copaw hermes; do
     grep -Fq "if: contains(matrix.worker_images, '${runtime}')" "${WORKFLOW_FILE}" || \
         fail "workflow does not conditionally download the ${runtime} Worker image"
@@ -154,5 +177,11 @@ grep -Fq "find /tmp/images -type f -name '*.tar.zst' -delete" "${WORKFLOW_FILE}"
     fail "test shards must remove compressed archives after loading images"
 grep -Fq 'make -o build-agentteams-controller build-${{ matrix.target }}' "${WORKFLOW_FILE}" || \
     fail "downstream image jobs must reuse the controller image loaded from the common artifact"
+[ "$(grep -Fc 'uses: jlumbroso/free-disk-space@main' "${WORKFLOW_FILE}")" -eq 1 ] || \
+    fail "integration test jobs must not run unconditional disk cleanup"
+grep -Fq 'min_available_kb=$((25 * 1024 * 1024))' "${WORKFLOW_FILE}" || \
+    fail "integration test jobs must enforce the minimum free-space threshold"
+grep -Fq 'if (( available_kb < min_available_kb )); then' "${WORKFLOW_FILE}" || \
+    fail "integration test jobs must clean up only when disk space is low"
 
 echo "Integration coverage matrix checks passed."

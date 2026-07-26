@@ -343,15 +343,23 @@ jobs:
       matrix: ${{ fromJSON(needs.detect-changes.outputs.test_matrix) }}
 
     steps:
-      - name: Free Up Disk Space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: false
-          haskell: false
-          large-packages: false
-          swap-storage: false
+      - name: Ensure disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          min_available_kb=$((25 * 1024 * 1024))
+          available_kb="$(df --output=avail / | tail -n 1 | tr -d ' ')"
+          echo "Available disk space: $((available_kb / 1024 / 1024)) GiB"
+          if (( available_kb < min_available_kb )); then
+            echo "Disk space is below 25 GiB; removing Android SDK and unused Docker images"
+            sudo rm -rf /usr/local/lib/android
+            docker image prune -af
+            available_kb="$(df --output=avail / | tail -n 1 | tr -d ' ')"
+          fi
+          if (( available_kb < min_available_kb )); then
+            echo "Insufficient disk space after cleanup: $((available_kb / 1024 / 1024)) GiB available" >&2
+            exit 1
+          fi
 
       - name: Checkout code
         uses: actions/checkout@v4

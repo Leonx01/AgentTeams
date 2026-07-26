@@ -24,6 +24,7 @@ test_setup "22-delete-worker-cleanup"
 
 TEST_WORKER="test-del-$$"
 STORAGE_PREFIX="${STORAGE_PREFIX:-${TEST_STORAGE_PREFIX:-agentteams/agentteams-storage}}"
+TEST_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-openclaw}"
 
 _cleanup() {
     log_info "Cleaning up: ${TEST_WORKER}"
@@ -81,7 +82,8 @@ _minio_worker_yaml() {
 # ============================================================
 log_section "Create Worker ${TEST_WORKER}"
 
-CREATE_OUTPUT=$(exec_in_agent agt create worker --name "${TEST_WORKER}" --no-wait 2>&1)
+CREATE_OUTPUT=$(exec_in_agent agt create worker --name "${TEST_WORKER}" \
+    --runtime "${TEST_WORKER_RUNTIME}" --no-wait 2>&1)
 CREATE_EXIT=$?
 if [ "${CREATE_EXIT}" -eq 0 ]; then
     log_pass "agt create worker accepted"
@@ -219,7 +221,8 @@ fi
 # ============================================================
 log_section "Reuse Name After Delete"
 
-RECREATE_OUTPUT=$(exec_in_agent agt create worker --name "${TEST_WORKER}" --no-wait 2>&1)
+RECREATE_OUTPUT=$(exec_in_agent agt create worker --name "${TEST_WORKER}" \
+    --runtime "${TEST_WORKER_RUNTIME}" --no-wait 2>&1)
 RECREATE_EXIT=$?
 if [ "${RECREATE_EXIT}" -eq 0 ]; then
     log_pass "Recreate with same name accepted"
