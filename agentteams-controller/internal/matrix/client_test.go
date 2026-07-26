@@ -658,6 +658,72 @@ func TestInviteToRoom_Idempotent(t *testing.T) {
 	}
 }
 
+func TestInviteToRoom_IdempotentTuwunelAmbiguousForbidden(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_matrix/client/v3/login":
+			adminLoginHandler(t, w)
+		case "/_matrix/client/v3/rooms/!room:d/invite":
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{
+				"errcode": "M_FORBIDDEN",
+				"error":   "M_FORBIDDEN: Auth check failed: cannot invite user that is joined or banned",
+			})
+		case "/_matrix/client/v3/rooms/!room:d/members":
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"chunk": []map[string]interface{}{
+					{"state_key": "@alice:d", "content": map[string]string{"membership": "join"}},
+				},
+			})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	c := NewTuwunelClient(Config{
+		ServerURL: server.URL, Domain: "d", AdminUser: "admin", AdminPassword: "pw",
+	}, server.Client())
+	if err := c.InviteToRoom(context.Background(), "!room:d", "@alice:d"); err != nil {
+		t.Errorf("expected nil when ambiguous Tuwunel error is confirmed joined, got %v", err)
+	}
+}
+
+func TestInviteToRoom_TuwunelAmbiguousForbiddenStillRejectsBannedUser(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_matrix/client/v3/login":
+			adminLoginHandler(t, w)
+		case "/_matrix/client/v3/rooms/!room:d/invite":
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{
+				"errcode": "M_FORBIDDEN",
+				"error":   "M_FORBIDDEN: Auth check failed: cannot invite user that is joined or banned",
+			})
+		case "/_matrix/client/v3/rooms/!room:d/members":
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"chunk": []map[string]interface{}{
+					{"state_key": "@alice:d", "content": map[string]string{"membership": "ban"}},
+				},
+			})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	c := NewTuwunelClient(Config{
+		ServerURL: server.URL, Domain: "d", AdminUser: "admin", AdminPassword: "pw",
+	}, server.Client())
+	if err := c.InviteToRoom(context.Background(), "!room:d", "@alice:d"); err == nil {
+		t.Error("expected error when ambiguous Tuwunel response is confirmed banned, got nil")
+	}
+}
+
 func TestInviteToRoom_RealError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

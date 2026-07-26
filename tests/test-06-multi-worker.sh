@@ -192,24 +192,24 @@ if [ -z "${PROJECT_ROOM}" ]; then
     exit 1
 fi
 
-log_info "Waiting for bounded collaboration completion (timeout: 600s)..."
+log_info "Waiting for bounded collaboration completion (timeout: 180s, nudge after 30s)..."
 COMPLETION_MSG=$(matrix_read_messages "${MANAGER_TOKEN}" "${PROJECT_ROOM}" 30 2>/dev/null | \
     jq -r --arg marker "COLLAB_COMPLETE ${COLLAB_ID}" \
     '[.chunk[] | select(.sender | startswith("@manager")) | .content.body | select(contains($marker))] | first // empty' \
     2>/dev/null || true)
 if [ -z "${COMPLETION_MSG}" ]; then
     COMPLETION_MSG=$(matrix_wait_for_message_containing "${MANAGER_TOKEN}" "${PROJECT_ROOM}" "@manager" \
-        "COLLAB_COMPLETE ${COLLAB_ID}" 600 \
+        "COLLAB_COMPLETE ${COLLAB_ID}" 180 \
         "${ADMIN_TOKEN}" "${DM_ROOM}" \
-        "Please continue ${COLLAB_ID}. Verify Alice's and Bob's exact files before posting the required completion marker." \
-        120 2>/dev/null || true)
+        "Continue ${COLLAB_ID} now: if Alice's file exists, explicitly @mention Bob in the Project Room with his exact Phase 2 task; once Bob's file exists, verify both files and post the required completion marker." \
+        30 2>/dev/null || true)
 fi
 if [ -n "${COMPLETION_MSG}" ]; then
     log_pass "Manager posted the correlated completion marker"
 else
     log_info "Recent project-room messages:"
     matrix_read_messages "${MANAGER_TOKEN}" "${PROJECT_ROOM}" 30 2>/dev/null || true
-    log_fail "Manager did not post COLLAB_COMPLETE ${COLLAB_ID} within 600s"
+    log_fail "Manager did not post COLLAB_COMPLETE ${COLLAB_ID} within 180s"
 fi
 
 log_section "Verify Shared Coordination"

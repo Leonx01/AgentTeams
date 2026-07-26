@@ -56,6 +56,20 @@ _detect_runtime() {
     " 2>/dev/null | tr -d '\r'
 }
 
+# Return the runtime workspace root for a Worker container. CoPaw Workers keep
+# their live workspace outside the shared agentteams-fs mount.
+_worker_workspace_root() {
+    local container="$1"
+    local worker="$2"
+    local copaw_root="/root/.copaw-worker/${worker}"
+
+    if docker exec "${container}" test -d "${copaw_root}/.copaw" 2>/dev/null; then
+        echo "${copaw_root}"
+    else
+        echo "/root/agentteams-fs/agents/${worker}"
+    fi
+}
+
 # Detect session directory for a given container based on its runtime.
 # Usage: _detect_session_dir <container> <base_workspace_dir>
 _detect_session_dir() {
@@ -571,10 +585,12 @@ wait_for_worker_session_stable() {
     local max_wait="${3:-120}"
     local container
     container="$(worker_container_name "${worker}")"
+    local worker_root
+    worker_root=$(_worker_workspace_root "$container" "$worker")
     local session_dir
-    session_dir=$(_detect_session_dir "$container" "/root/agentteams-fs/agents/${worker}")
+    session_dir=$(_detect_session_dir "$container" "$worker_root")
     local runtime
-    runtime=$(_detect_runtime "$container" "/root/agentteams-fs/agents/${worker}")
+    runtime=$(_detect_runtime "$container" "$worker_root")
 
     if [ "$runtime" = "hermes" ]; then
         log_info "Worker '${worker}' uses Hermes; SessionDB metrics are transaction-based, skipping jsonl stabilization wait" >&2
@@ -586,7 +602,7 @@ wait_for_worker_session_stable() {
         return 0
     fi
 
-    if ! _is_metrics_supported "$container" "/root/agentteams-fs/agents/${worker}"; then
+    if ! _is_metrics_supported "$container" "$worker_root"; then
         log_info "Worker '${worker}' runtime does not record session metrics, skipping session wait" >&2
         return 0
     fi
@@ -729,10 +745,12 @@ snapshot_baseline() {
     for worker in "${workers[@]}"; do
         local worker_container
         worker_container="$(worker_container_name "${worker}")"
+        local worker_root
+        worker_root=$(_worker_workspace_root "$worker_container" "$worker")
         local worker_session_dir
-        worker_session_dir=$(_detect_session_dir "$worker_container" "/root/agentteams-fs/agents/${worker}")
+        worker_session_dir=$(_detect_session_dir "$worker_container" "$worker_root")
         local worker_runtime
-        worker_runtime=$(_detect_runtime "$worker_container" "/root/agentteams-fs/agents/${worker}")
+        worker_runtime=$(_detect_runtime "$worker_container" "$worker_root")
 
         if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${worker_container}$"; then
             continue
@@ -740,15 +758,15 @@ snapshot_baseline() {
 
         if [ "$worker_runtime" = "hermes" ]; then
             local worker_db
-            worker_db=$(_detect_hermes_state_db "/root/agentteams-fs/agents/${worker}")
+            worker_db=$(_detect_hermes_state_db "$worker_root")
             local worker_snapshot
             worker_snapshot=$(_snapshot_hermes_sessions "$worker_container" "$worker_db")
             snapshot_result=$(echo "$snapshot_result" | jq --arg w "$worker" --argjson o "$worker_snapshot" '.offsets[$w] = $o')
         elif [ "$worker_runtime" = "copaw" ]; then
             local worker_copaw_totals
-            worker_copaw_totals=$(_read_copaw_token_totals "$worker_container" "/root/agentteams-fs/agents/${worker}")
+            worker_copaw_totals=$(_read_copaw_token_totals "$worker_container" "$worker_root")
             snapshot_result=$(echo "$snapshot_result" | jq --arg w "$worker" --argjson o "$worker_copaw_totals" '.offsets[$w] = $o')
-        elif ! _is_metrics_supported "$worker_container" "/root/agentteams-fs/agents/${worker}"; then
+        elif ! _is_metrics_supported "$worker_container" "$worker_root"; then
             continue
         else
             local worker_files
@@ -912,10 +930,12 @@ collect_delta_metrics() {
     for worker in "${workers[@]}"; do
         local worker_container
         worker_container="$(worker_container_name "${worker}")"
+        local worker_root
+        worker_root=$(_worker_workspace_root "$worker_container" "$worker")
         local worker_session_dir
-        worker_session_dir=$(_detect_session_dir "$worker_container" "/root/agentteams-fs/agents/${worker}")
+        worker_session_dir=$(_detect_session_dir "$worker_container" "$worker_root")
         local worker_runtime
-        worker_runtime=$(_detect_runtime "$worker_container" "/root/agentteams-fs/agents/${worker}")
+        worker_runtime=$(_detect_runtime "$worker_container" "$worker_root")
 
         log_info "Collecting Worker '${worker}' delta metrics..." >&2
 
@@ -926,7 +946,7 @@ collect_delta_metrics() {
 
         if [ "$worker_runtime" != "hermes" ] && \
            [ "$worker_runtime" != "copaw" ] && \
-           ! _is_metrics_supported "$worker_container" "/root/agentteams-fs/agents/${worker}"; then
+           ! _is_metrics_supported "$worker_container" "$worker_root"; then
             log_info "Worker '${worker}' runtime '${worker_runtime}' does not record session metrics; emitting unsupported placeholder" >&2
             local worker_blob
             worker_blob=$(_emit_unsupported_metrics_blob "$worker_runtime")
@@ -939,12 +959,12 @@ collect_delta_metrics() {
         local worker_delta
         if [ "$worker_runtime" = "hermes" ]; then
             local worker_db
-            worker_db=$(_detect_hermes_state_db "/root/agentteams-fs/agents/${worker}")
+            worker_db=$(_detect_hermes_state_db "$worker_root")
             worker_delta=$(_collect_hermes_delta "$worker_container" "$worker_db" "$worker_offsets")
         elif [ "$worker_runtime" = "copaw" ]; then
             local worker_copaw_offsets
             worker_copaw_offsets=$(echo "$baseline" | jq -c --arg w "$worker" '.offsets[$w] // {}')
-            worker_delta=$(_collect_copaw_delta "$worker_container" "/root/agentteams-fs/agents/${worker}" "$worker_copaw_offsets")
+            worker_delta=$(_collect_copaw_delta "$worker_container" "$worker_root" "$worker_copaw_offsets")
         else
             worker_delta=$(_collect_agent_delta "$worker_container" "$worker_session_dir" "$worker_offsets")
         fi
@@ -1038,10 +1058,12 @@ EOF
     for worker in "${workers[@]}"; do
         local worker_container
         worker_container="$(worker_container_name "${worker}")"
+        local worker_root
+        worker_root=$(_worker_workspace_root "$worker_container" "$worker")
         local worker_session_dir
-        worker_session_dir=$(_detect_session_dir "$worker_container" "/root/agentteams-fs/agents/${worker}")
+        worker_session_dir=$(_detect_session_dir "$worker_container" "$worker_root")
         local worker_runtime
-        worker_runtime=$(_detect_runtime "$worker_container" "/root/agentteams-fs/agents/${worker}")
+        worker_runtime=$(_detect_runtime "$worker_container" "$worker_root")
         
         log_info "Collecting Worker '${worker}' metrics..." >&2
         
@@ -1053,7 +1075,7 @@ EOF
 
         if [ "$worker_runtime" != "hermes" ] && \
            [ "$worker_runtime" != "copaw" ] && \
-           ! _is_metrics_supported "$worker_container" "/root/agentteams-fs/agents/${worker}"; then
+           ! _is_metrics_supported "$worker_container" "$worker_root"; then
             log_info "Worker '${worker}' runtime '${worker_runtime}' does not record session metrics; emitting unsupported placeholder" >&2
             local worker_blob
             worker_blob=$(_emit_unsupported_metrics_blob "$worker_runtime")
@@ -1064,11 +1086,11 @@ EOF
         local worker_metrics
         if [ "$worker_runtime" = "hermes" ]; then
             local worker_db
-            worker_db=$(_detect_hermes_state_db "/root/agentteams-fs/agents/${worker}")
+            worker_db=$(_detect_hermes_state_db "$worker_root")
             worker_metrics=$(_collect_hermes_latest_metrics "$worker_container" "$worker_db")
         elif [ "$worker_runtime" = "copaw" ]; then
             local worker_copaw_totals
-            worker_copaw_totals=$(_read_copaw_token_totals "$worker_container" "/root/agentteams-fs/agents/${worker}")
+            worker_copaw_totals=$(_read_copaw_token_totals "$worker_container" "$worker_root")
             local wc_calls wc_input wc_output
             wc_calls=$(echo "$worker_copaw_totals" | jq -r '.call_count // 0')
             wc_input=$(echo "$worker_copaw_totals" | jq -r '.prompt_tokens // 0')

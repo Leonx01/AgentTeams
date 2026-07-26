@@ -60,3 +60,21 @@ minio_wait_for_file() {
     done
     return 0
 }
+
+# Wait for a MinIO file to contain an expected fixed string.
+# Usage: minio_wait_for_content <path> <expected> [timeout_seconds]
+minio_wait_for_content() {
+    local path="$1"
+    local expected="$2"
+    local timeout="${3:-120}"
+    local elapsed=0
+
+    while [ "${elapsed}" -lt "${timeout}" ]; do
+        if minio_read_file "${path}" 2>/dev/null | grep -Fq -- "${expected}"; then
+            return 0
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+    return 1
+}

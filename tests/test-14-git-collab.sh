@@ -31,6 +31,8 @@ FEATURE_BRANCH="feature/proposal-${TEST_RUN_ID}"
 REVIEW_BRANCH="review/proposal-${TEST_RUN_ID}"
 TEST_BRANCH="verify/proposal-${TEST_RUN_ID}"
 PROJECT_NAME="Project: git-collab-${TEST_RUN_ID}"
+GIT_DAEMON_PORT=19418
+GIT_DAEMON_PID="/tmp/agentteams-git-daemon-${TEST_RUN_ID}.pid"
 
 log_section "Setup: Initialize Bare Git Repo"
 
@@ -46,6 +48,9 @@ docker exec "${TEST_CONTROLLER_CONTAINER}" bash -c "
     git -C \"\$tmpdir\" -c user.email='setup@agentteams.io' -c user.name='Setup' -c core.hooksPath=/dev/null commit -m 'Initial commit'
     git -C \"\$tmpdir\" push origin HEAD:main
     rm -rf \"\$tmpdir\"
+    git daemon --reuseaddr --listen=0.0.0.0 --port=${GIT_DAEMON_PORT} \
+        --base-path=/root/git-repos --export-all --enable=receive-pack \
+        --detach --pid-file='${GIT_DAEMON_PID}'
 " || {
     log_fail "Failed to initialize bare git repo"
     test_teardown "14-git-collab"
@@ -55,14 +60,18 @@ docker exec "${TEST_CONTROLLER_CONTAINER}" bash -c "
 log_pass "Bare git repo initialized at ${REPO_PATH}.git"
 
 _cleanup_git_repo() {
+    docker exec "${TEST_CONTROLLER_CONTAINER}" sh -c \
+        "test ! -f '${GIT_DAEMON_PID}' || kill \$(cat '${GIT_DAEMON_PID}')" \
+        2>/dev/null || true
     docker exec "${TEST_CONTROLLER_CONTAINER}" rm -rf "${REPO_PATH}.git" 2>/dev/null || true
+    docker exec "${TEST_CONTROLLER_CONTAINER}" rm -f "${GIT_DAEMON_PID}" 2>/dev/null || true
 }
 trap _cleanup_git_repo EXIT
 
-# All git operations are delegated to the Manager, which runs them locally
-# inside the manager container — no network protocol needed, use local path directly.
-GIT_REPO_URL="${REPO_PATH}.git"
-log_info "Git repo local path (used by Manager for all operations): ${GIT_REPO_URL}"
+# Expose the temporary bare repo only on the test Docker network so every
+# runtime can perform the same clone/push workflow without credentials.
+GIT_REPO_URL="git://agentteams-controller:${GIT_DAEMON_PORT}/$(basename "${REPO_PATH}").git"
+log_info "Git repo URL (test Docker network only): ${GIT_REPO_URL}"
 
 log_section "Setup: Find or Create DM Room"
 
@@ -111,6 +120,7 @@ Before starting any phase:
    - SOUL/role: 'Developer working on a shared git repo using git-delegation workflows'
    If a worker already exists, reuse it.
 2. Create a shared project room named EXACTLY '${PROJECT_NAME}' that includes alice, bob, charlie, and the human admin (use the create-project.sh script). All phase assignments and reports MUST happen in this project room — never in individual worker rooms.
+3. The temporary git:// URL is directly reachable from every Worker and needs no credentials. Tell Workers to run the listed git commands directly. Do NOT use git-request or git-delegation for this test.
 
 Run the phases strictly in order, waiting for each phase's report before starting the next.
 
@@ -208,18 +218,52 @@ log_info "Project room: ${PROJECT_ROOM}"
 
 PROJECT_BASELINE_EVENT=$(matrix_latest_reply_event "${MANAGER_TOKEN}" "${PROJECT_ROOM}" "@manager")
 
-log_info "Waiting for all three collaboration branches (timeout: 900s)..."
-DEADLINE=$(( $(date +%s) + 900 ))
+log_info "Waiting for collaboration milestones (overall timeout: 600s, no-progress timeout: 120s)..."
+DEADLINE=$(( $(date +%s) + 600 ))
+STALL_DEADLINE=$(( $(date +%s) + 120 ))
+NEXT_NUDGE=$(( $(date +%s) + 45 ))
+LAST_STATE=""
 while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
-    if docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
-            show-ref --verify --quiet "refs/heads/${FEATURE_BRANCH}" \
-        && docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
-            show-ref --verify --quiet "refs/heads/${REVIEW_BRANCH}" \
-        && docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
-            show-ref --verify --quiet "refs/heads/${TEST_BRANCH}"; then
+    FEATURE_SHA=$(docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
+        rev-parse --verify "refs/heads/${FEATURE_BRANCH}" 2>/dev/null || true)
+    REVIEW_SHA=$(docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
+        rev-parse --verify "refs/heads/${REVIEW_BRANCH}" 2>/dev/null || true)
+    TEST_SHA=$(docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
+        rev-parse --verify "refs/heads/${TEST_BRANCH}" 2>/dev/null || true)
+    FEATURE_COMMITS=0
+    if [ -n "${FEATURE_SHA}" ]; then
+        FEATURE_COMMITS=$(docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
+            rev-list --count "main..${FEATURE_BRANCH}" 2>/dev/null || echo 0)
+    fi
+    STATE="${FEATURE_SHA}:${REVIEW_SHA}:${FEATURE_COMMITS}:${TEST_SHA}"
+
+    if [ -n "${TEST_SHA}" ] && [ "${FEATURE_COMMITS}" -ge 2 ]; then
         break
     fi
-    sleep 10
+
+    NOW=$(date +%s)
+    if [ "${STATE}" != "${LAST_STATE}" ]; then
+        log_info "Git collaboration advanced (feature commits=${FEATURE_COMMITS}, review=$([ -n "${REVIEW_SHA}" ] && echo yes || echo no), verify=$([ -n "${TEST_SHA}" ] && echo yes || echo no))"
+        LAST_STATE="${STATE}"
+        STALL_DEADLINE=$((NOW + 120))
+        NEXT_NUDGE=$((NOW + 45))
+    elif [ "${NOW}" -ge "${STALL_DEADLINE}" ]; then
+        log_fail "Git collaboration made no branch progress for 120s"
+        break
+    elif [ "${NOW}" -ge "${NEXT_NUDGE}" ]; then
+        if [ -z "${FEATURE_SHA}" ]; then
+            NUDGE="Continue git collaboration ${TEST_RUN_ID}: explicitly @mention Alice and remind her to clone ${GIT_REPO_URL} directly (no git-request) and push ${FEATURE_BRANCH}."
+        elif [ -z "${REVIEW_SHA}" ]; then
+            NUDGE="Continue git collaboration ${TEST_RUN_ID}: Phase 1 is pushed; explicitly @mention Bob with Phase 2 and require ${REVIEW_BRANCH}."
+        elif [ "${FEATURE_COMMITS}" -lt 2 ]; then
+            NUDGE="Continue git collaboration ${TEST_RUN_ID}: Bob's review is pushed; explicitly @mention Alice with Phase 3 and require the second commit on ${FEATURE_BRANCH}."
+        else
+            NUDGE="Continue git collaboration ${TEST_RUN_ID}: Alice's revision is pushed; explicitly @mention Charlie with Phase 4 and require ${TEST_BRANCH}."
+        fi
+        matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" "${NUDGE}" >/dev/null
+        NEXT_NUDGE=$((NOW + 45))
+    fi
+    sleep 5
 done
 
 if docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
@@ -232,7 +276,7 @@ if docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
 else
     log_info "Available refs:"
     docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" show-ref 2>/dev/null || true
-    log_fail "Collaboration branches were not all available within 900s"
+    log_fail "Collaboration branches were not all available before the progress deadline"
     test_teardown "14-git-collab"
     test_summary
     exit 1
@@ -269,7 +313,7 @@ if [ "${TESTS_FAILED}" -gt 0 ]; then
     exit 1
 fi
 
-log_info "Waiting for the correlated completion marker (timeout: 300s)..."
+log_info "Waiting for the correlated completion marker (timeout: 120s)..."
 COMPLETION_MSG=$(matrix_read_messages "${MANAGER_TOKEN}" "${PROJECT_ROOM}" 50 2>/dev/null | \
     jq -r --arg marker "GIT_COLLAB_COMPLETE ${TEST_RUN_ID}" \
     '[.chunk[] | select(.sender | startswith("@manager")) | .content.body | select(contains($marker))] | first // empty' \
@@ -277,10 +321,10 @@ COMPLETION_MSG=$(matrix_read_messages "${MANAGER_TOKEN}" "${PROJECT_ROOM}" 50 2>
 if [ -z "${COMPLETION_MSG}" ]; then
     COMPLETION_MSG=$(matrix_wait_for_reply_matching_since \
         "${MANAGER_TOKEN}" "${PROJECT_ROOM}" "@manager" "${PROJECT_BASELINE_EVENT}" \
-        "GIT_COLLAB_COMPLETE ${TEST_RUN_ID}" 300 \
+        "GIT_COLLAB_COMPLETE ${TEST_RUN_ID}" 120 \
         "${ADMIN_TOKEN}" "${DM_ROOM}" \
         "Please finish git collaboration ${TEST_RUN_ID} and post the exact completion marker." \
-        120 2>/dev/null || true)
+        30 2>/dev/null || true)
 fi
 assert_not_empty "${COMPLETION_MSG}" \
     "Manager posted the correlated completion marker in the project room"

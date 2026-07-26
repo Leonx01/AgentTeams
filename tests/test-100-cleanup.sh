@@ -79,6 +79,28 @@ if [ -n "${TEST_TEAMS}" ]; then
             log_info "agt delete team ${team} failed (YAML likely already removed by prior test cleanup)"
         fi
     done
+
+    TEAM_DELETE_TIMEOUT=60
+    TEAM_DELETE_ELAPSED=0
+    while [ "${TEAM_DELETE_ELAPSED}" -lt "${TEAM_DELETE_TIMEOUT}" ]; do
+        REMAINING_TEAMS=""
+        for team in ${TEST_TEAMS}; do
+            if exec_in_agent agt get teams "${team}" -o json >/dev/null 2>&1; then
+                REMAINING_TEAMS="${REMAINING_TEAMS} ${team}"
+            fi
+        done
+        if [ -z "${REMAINING_TEAMS}" ]; then
+            break
+        fi
+        sleep 2
+        TEAM_DELETE_ELAPSED=$((TEAM_DELETE_ELAPSED + 2))
+    done
+
+    if [ -z "${REMAINING_TEAMS}" ]; then
+        log_pass "All Team resources deleted before Worker cleanup (took ~${TEAM_DELETE_ELAPSED}s)"
+    else
+        log_fail "Team resources still deleting after ${TEAM_DELETE_TIMEOUT}s:${REMAINING_TEAMS}"
+    fi
 fi
 
 # ============================================================
@@ -110,21 +132,31 @@ log_info "Waiting for controller to process all deletes..."
 RECONCILE_TIMEOUT=120
 RECONCILE_ELAPSED=0
 
-# Wait until all test worker containers are gone (not just stopped — removed)
+# Wait until all test worker containers and API resources are gone. Some prior
+# tests remove containers before this final cleanup, so container state alone
+# cannot prove that asynchronous Worker finalizers have completed.
 while [ "${RECONCILE_ELAPSED}" -lt "${RECONCILE_TIMEOUT}" ]; do
-    REMAINING=$(list_test_worker_containers)
-    if [ -z "${REMAINING}" ]; then
+    REMAINING_CONTAINERS=$(list_test_worker_containers)
+    REMAINING_WORKERS=""
+    for worker in ${TEST_WORKERS}; do
+        if exec_in_agent agt get workers "${worker}" -o json >/dev/null 2>&1; then
+            REMAINING_WORKERS="${REMAINING_WORKERS} ${worker}"
+        fi
+    done
+    if [ -z "${REMAINING_CONTAINERS}" ] && [ -z "${REMAINING_WORKERS}" ]; then
         break
     fi
-    sleep 5
-    RECONCILE_ELAPSED=$((RECONCILE_ELAPSED + 5))
-    REMAINING_COUNT=$(echo "${REMAINING}" | awk 'NF { count++ } END { print count + 0 }')
-    printf "\r[TEST INFO] Waiting for containers to be removed... (%d remaining, %ds/%ds)" "${REMAINING_COUNT}" "${RECONCILE_ELAPSED}" "${RECONCILE_TIMEOUT}"
+    sleep 2
+    RECONCILE_ELAPSED=$((RECONCILE_ELAPSED + 2))
+    REMAINING_CONTAINER_COUNT=$(echo "${REMAINING_CONTAINERS}" | awk 'NF { count++ } END { print count + 0 }')
+    REMAINING_WORKER_COUNT=$(echo "${REMAINING_WORKERS}" | awk 'NF { count++ } END { print count + 0 }')
+    printf "\r[TEST INFO] Waiting for cleanup... (%d container(s), %d Worker resource(s), %ds/%ds)" \
+        "${REMAINING_CONTAINER_COUNT}" "${REMAINING_WORKER_COUNT}" "${RECONCILE_ELAPSED}" "${RECONCILE_TIMEOUT}"
 done
 echo ""
 
 if [ "${RECONCILE_ELAPSED}" -lt "${RECONCILE_TIMEOUT}" ]; then
-    log_pass "All test containers removed (took ~${RECONCILE_ELAPSED}s)"
+    log_pass "All test containers and Worker resources removed (took ~${RECONCILE_ELAPSED}s)"
 else
     STILL_PRESENT=$(list_test_worker_containers)
     if [ -n "${STILL_PRESENT}" ]; then

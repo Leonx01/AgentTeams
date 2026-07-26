@@ -38,8 +38,10 @@ merge_openclaw_config() {
     fi
 
     local merged
-    merged=$(jq -n --argfile remote "${remote_path}" --argfile local "${local_path}" '
-        $local
+    if ! merged=$(jq -n --slurpfile remote_files "${remote_path}" --slurpfile local_files "${local_path}" '
+        ($remote_files[0]) as $remote
+        | ($local_files[0]) as $local
+        | $local
         | if ($remote.models // null) != null then .models = $remote.models else . end
         | if ($remote.gateway // null) != null then .gateway = $remote.gateway else . end
         | if ($remote.channels // null) != null or ($local.channels // null) != null then
@@ -59,10 +61,18 @@ merge_openclaw_config() {
                 else . end
             )
           else . end
-    ' 2>/dev/null)
+    ' 2>/dev/null); then
+        return 0
+    fi
 
-    if [ $? -eq 0 ] && [ -n "${merged}" ]; then
-        echo "${merged}" > "${output_path}"
+    if [ -n "${merged}" ]; then
+        local merged_path="${output_path}.tmp.$$"
+        printf '%s\n' "${merged}" > "${merged_path}"
+        if cmp -s "${merged_path}" "${output_path}"; then
+            rm -f "${merged_path}"
+        else
+            mv "${merged_path}" "${output_path}"
+        fi
     else
         # jq merge failed — keep local (do not replace with remote)
         :

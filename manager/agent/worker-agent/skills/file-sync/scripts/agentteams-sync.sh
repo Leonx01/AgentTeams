@@ -22,25 +22,24 @@ WORKSPACE="${AGENTTEAMS_ROOT}/agents/${WORKER_NAME}"
 
 ensure_mc_credentials 2>/dev/null || true
 
-# Save local openclaw.json before mirror overwrites it
 LOCAL_OPENCLAW="${WORKSPACE}/openclaw.json"
-SAVED_LOCAL="/tmp/openclaw-local-sync.json"
-if [ -f "${LOCAL_OPENCLAW}" ]; then
-    cp "${LOCAL_OPENCLAW}" "${SAVED_LOCAL}"
-fi
+REMOTE_OPENCLAW="/tmp/openclaw-remote-sync.json"
 
 mc mirror "${AGENTTEAMS_STORAGE_PREFIX}/agents/${WORKER_NAME}/" "${WORKSPACE}/" --overwrite \
+    --exclude "openclaw.json" \
     --exclude ".openclaw/matrix/**" --exclude ".openclaw/canvas/**" 2>&1
 mc mirror "${AGENTTEAMS_STORAGE_PREFIX}/shared/" "${AGENTTEAMS_ROOT}/shared/" --overwrite 2>/dev/null || true
 
 # Update pull marker so the local→remote sync loop doesn't push back freshly-pulled files
 touch "${WORKSPACE}/.last-pull"
 
-# Merge openclaw.json: local-first (pre-mirror copy) with MinIO overlay (arg1=remote, arg2=local, arg3=out)
-if [ -f "${SAVED_LOCAL}" ] && [ -f "${LOCAL_OPENCLAW}" ]; then
-    merge_openclaw_config "${LOCAL_OPENCLAW}" "${SAVED_LOCAL}" "${LOCAL_OPENCLAW}"
-    rm -f "${SAVED_LOCAL}"
+# Keep the remote config away from the live path so OpenClaw never observes the
+# stale remote access token before the local-first merge restores its token.
+rm -f "${REMOTE_OPENCLAW}"
+if mc cp "${AGENTTEAMS_STORAGE_PREFIX}/agents/${WORKER_NAME}/openclaw.json" "${REMOTE_OPENCLAW}" 2>/dev/null; then
+    merge_openclaw_config "${REMOTE_OPENCLAW}" "${LOCAL_OPENCLAW}"
 fi
+rm -f "${REMOTE_OPENCLAW}"
 
 # Restore +x on scripts (MinIO does not preserve Unix permission bits)
 find "${WORKSPACE}/skills" -name '*.sh' -exec chmod +x {} + 2>/dev/null || true

@@ -73,7 +73,7 @@ if [ -z "${ORIGINAL_REPLY}" ]; then
     exit 1
 fi
 
-if minio_wait_for_file "${START_FILE}" 240; then
+if minio_wait_for_content "${START_FILE}" "${ORIGINAL_MARKER}" 240; then
     START_CONTENT=$(minio_read_file "${START_FILE}")
     assert_contains "${START_CONTENT}" "${ORIGINAL_MARKER}" \
         "Alice started the original task before human intervention"
@@ -107,14 +107,14 @@ fi
 
 log_section "Verify Incorporation"
 
-if minio_wait_for_file "${RESULT_FILE}" 300; then
+if minio_wait_for_content "${RESULT_FILE}" "${SUPPLEMENT_MARKER}" 180; then
     RESULT_CONTENT=$(minio_read_file "${RESULT_FILE}")
     assert_contains "${RESULT_CONTENT}" "${ORIGINAL_MARKER}" \
         "Final result preserves the original requirement"
     assert_contains "${RESULT_CONTENT}" "${SUPPLEMENT_MARKER}" \
         "Final result incorporates the human supplement"
 else
-    log_fail "Final result was not created within 300s: ${RESULT_FILE}"
+    log_fail "Final result did not contain the supplementary marker within 180s: ${RESULT_FILE}"
 fi
 
 log_section "Collect Metrics"
