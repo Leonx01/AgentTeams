@@ -143,5 +143,7 @@ if grep -Fq 'pattern: image-common-*' "${WORKFLOW_FILE}"; then
 fi
 grep -Fq "find /tmp/images -type f -name '*.tar.zst' -delete" "${WORKFLOW_FILE}" || \
     fail "test shards must remove compressed archives after loading images"
+grep -Fq 'make -o build-agentteams-controller build-${{ matrix.target }}' "${WORKFLOW_FILE}" || \
+    fail "downstream image jobs must reuse the controller image loaded from the common artifact"
 
 echo "Integration coverage matrix checks passed."
