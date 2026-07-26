@@ -520,8 +520,11 @@ func TestReconcileTeamTeamReferences_QwenPawProjectsRuntimeRoster(t *testing.T) 
 	if len(devReq.TeamMembers) != len(leaderReq.TeamMembers) {
 		t.Fatalf("leader/dev roster sizes differ: %d vs %d", len(leaderReq.TeamMembers), len(devReq.TeamMembers))
 	}
-	if got := len(deployer.Calls.SyncTeamLeaderAssets); got != 0 {
-		t.Fatalf("qwenpaw SyncTeamLeaderAssets calls=%d, want 0", got)
+	if got := len(deployer.Calls.SyncTeamLeaderAssets); got != 1 {
+		t.Fatalf("qwenpaw SyncTeamLeaderAssets calls=%d, want 1", got)
+	}
+	if got := deployer.Calls.SyncTeamLeaderAssets[0]; got.WorkerName != "lead" || got.Runtime != "qwenpaw" {
+		t.Fatalf("qwenpaw SyncTeamLeaderAssets request=%+v, want lead/qwenpaw", got)
 	}
 	if got := len(deployer.Calls.InjectCoordinationContext); got != 0 {
 		t.Fatalf("qwenpaw InjectCoordinationContext calls=%d, want 0", got)

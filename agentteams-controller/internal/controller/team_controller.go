@@ -398,18 +398,17 @@ func (r *TeamReconciler) reconcileTeam(ctx context.Context, t *v1beta1.Team, pat
 	teamWorkerEntries := teamWorkerEntries(members, leaderRef.Name)
 	leaderRuntime := r.teamMemberRuntime(leaderMember)
 
-	if leaderRuntime != backend.RuntimeQwenPaw {
-		// Overlay Team Leader built-ins onto the team-reference leader Worker before
-		// injecting the team coordination context. The Worker still owns its
-		// lifecycle and credentials; this only restores role-specific prompt and
-		// skill assets generated for Team members.
-		if err := r.Deployer.SyncTeamLeaderAssets(ctx, service.SyncTeamLeaderAssetsRequest{
-			WorkerName: leaderRuntimeName,
-			Runtime:    leaderMember.worker.Spec.Runtime,
-		}); err != nil {
-			logger.Error(err, "team leader asset sync failed (non-fatal)", "worker", leaderRuntimeName)
-		}
+	// Overlay Team Leader built-ins onto the team-reference leader Worker. The
+	// Worker still owns its lifecycle and credentials; this only restores the
+	// role-specific prompt and skill assets generated for Team members.
+	if err := r.Deployer.SyncTeamLeaderAssets(ctx, service.SyncTeamLeaderAssetsRequest{
+		WorkerName: leaderRuntimeName,
+		Runtime:    leaderMember.worker.Spec.Runtime,
+	}); err != nil {
+		logger.Error(err, "team leader asset sync failed (non-fatal)", "worker", leaderRuntimeName)
+	}
 
+	if leaderRuntime != backend.RuntimeQwenPaw {
 		// Leader coordination context
 		if err := r.Deployer.InjectCoordinationContext(ctx, service.CoordinationDeployRequest{
 			LeaderName:         leaderRuntimeName,
