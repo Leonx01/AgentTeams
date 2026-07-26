@@ -25,6 +25,7 @@ TEST_LEADER="${TEST_TEAM}-lead"
 TEST_W1="${TEST_TEAM}-dev"
 TEST_HUMAN="test-human-$$"
 STORAGE_PREFIX="${STORAGE_PREFIX:-${TEST_STORAGE_PREFIX:-agentteams/agentteams-storage}}"
+TEST_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-openclaw}"
 
 _cleanup() {
     if [ "${TESTS_FAILED}" -gt 0 ]; then
@@ -156,6 +157,7 @@ metadata:
   name: ${TEST_LEADER}
 spec:
   model: qwen3.5-plus
+  runtime: ${TEST_WORKER_RUNTIME}
 ---
 apiVersion: agentteams.io/v1beta1
 kind: Worker
@@ -163,6 +165,7 @@ metadata:
   name: ${TEST_W1}
 spec:
   model: qwen3.5-plus
+  runtime: ${TEST_WORKER_RUNTIME}
 ---
 apiVersion: agentteams.io/v1beta1
 kind: Team

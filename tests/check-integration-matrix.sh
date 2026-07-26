@@ -7,6 +7,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MATRIX_FILE="${SCRIPT_DIR}/integration-test-matrix.json"
 WORKFLOW_FILE="${SCRIPT_DIR}/../.github/workflows/test-integration.yml"
 INSTALLER_FILE="${SCRIPT_DIR}/../install/agentteams-install.sh"
+TEAM_CONFIG_TEST="${SCRIPT_DIR}/test-18-team-config-verify.sh"
+TEAM_ADMIN_TEST="${SCRIPT_DIR}/test-19-human-and-team-admin.sh"
 
 fail() {
     echo "FAIL: $*" >&2
@@ -112,6 +114,13 @@ unnecessary_worker_images=$(jq -r '
 ' "${MATRIX_FILE}")
 [ -z "${unnecessary_worker_images}" ] || \
     fail "non-runtime-switch shards must load only their selected Worker image: ${unnecessary_worker_images}"
+
+for test_file in "${TEAM_CONFIG_TEST}" "${TEAM_ADMIN_TEST}"; do
+    grep -Fq 'TEST_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-openclaw}"' "${test_file}" || \
+        fail "$(basename "${test_file}") must derive Team member runtime from the matrix runtime"
+    [ "$(grep -Fc 'runtime: ${TEST_WORKER_RUNTIME}' "${test_file}")" -ge 2 ] || \
+        fail "$(basename "${test_file}") must set every Team member Worker runtime explicitly"
+done
 
 for runtime in openclaw copaw hermes; do
     grep -Fq "if: contains(matrix.worker_images, '${runtime}')" "${WORKFLOW_FILE}" || \

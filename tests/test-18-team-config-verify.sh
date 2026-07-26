@@ -22,6 +22,7 @@ TEST_LEADER="${TEST_TEAM}-lead"
 TEST_W1="${TEST_TEAM}-dev"
 TEST_W2="${TEST_TEAM}-qa"
 STORAGE_PREFIX="${STORAGE_PREFIX:-${TEST_STORAGE_PREFIX:-agentteams/agentteams-storage}}"
+TEST_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-openclaw}"
 
 _cleanup() {
     log_info "Cleaning up team: ${TEST_TEAM}"
@@ -93,6 +94,7 @@ metadata:
   name: ${TEST_LEADER}
 spec:
   model: qwen3.5-plus
+  runtime: ${TEST_WORKER_RUNTIME}
 ---
 apiVersion: agentteams.io/v1beta1
 kind: Worker
@@ -100,6 +102,7 @@ metadata:
   name: ${TEST_W1}
 spec:
   model: qwen3.5-plus
+  runtime: ${TEST_WORKER_RUNTIME}
   channelPolicy:
     groupDenyExtra:
       - ${TEST_W2}
@@ -110,6 +113,7 @@ metadata:
   name: ${TEST_W2}
 spec:
   model: qwen3.5-plus
+  runtime: ${TEST_WORKER_RUNTIME}
 ---
 apiVersion: agentteams.io/v1beta1
 kind: Team
