@@ -6,6 +6,7 @@ Record image-affecting changes to `manager/`, `worker/`, `copaw/`, `hermes/`, `o
 
 **Bug Fixes**
 
+- **CoPaw Team Leader assets**: Overlay Team Leader prompts and built-in skills when a Team references an existing CoPaw Worker, while preserving CoPaw runtime configuration ownership. ([95201a2](https://github.com/agentscope-ai/AgentTeams/commit/95201a2))
 - **Worker config sync stability**: Merge remote `openclaw.json` updates without overwriting the live local Matrix token or rewriting unchanged configuration. ([4efb7f9](https://github.com/agentscope-ai/AgentTeams/commit/4efb7f9))
 - **Team deletion convergence**: Confirm ambiguous Tuwunel invite failures against current room membership so already-joined Manager users do not block Team finalizers. ([4efb7f9](https://github.com/agentscope-ai/AgentTeams/commit/4efb7f9))
 - **Team Worker room boundary convergence**: Remove Manager again after standalone Worker infrastructure reconciliation restores regular Team Worker personal-room membership. ([b5b0add](https://github.com/agentscope-ai/AgentTeams/commit/b5b0add))
