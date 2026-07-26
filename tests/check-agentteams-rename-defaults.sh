@@ -14,17 +14,6 @@ archive_paths=(
 )
 
 if matches="$(git grep -nIi "${legacy_brand}" -- . "${archive_paths[@]}" 2>/dev/null)"; then
-    compat_start="$(grep -n '^        # Begin pre-v1.2 image compatibility$' install/agentteams-install.sh | cut -d: -f1)"
-    compat_end="$(grep -n '^        # End pre-v1.2 image compatibility$' install/agentteams-install.sh | cut -d: -f1)"
-    matches="$(
-        awk -F: -v start="${compat_start}" -v end="${compat_end}" '
-            $1 == "install/agentteams-install.sh" && $2 >= start && $2 <= end { next }
-            { print }
-        ' <<<"${matches}"
-    )"
-fi
-
-if [ -n "${matches:-}" ]; then
     echo "FAIL: active files still contain the retired brand:" >&2
     echo "${matches}" >&2
     exit 1

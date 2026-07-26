@@ -10,6 +10,7 @@ eval "$(
     sed -n \
         -e '/^_ver_lt()/,/^}/p' \
         -e '/^_use_legacy_image_env()/,/^}/p' \
+        -e '/^_controller_env_prefix()/,/^}/p' \
         "${INSTALLER}"
 )"
 
@@ -37,9 +38,27 @@ AGENTTEAMS_KNOWN_STABLE_VERSION="v1.2.0"
 assert_current "latest"
 
 legacy_prefix='HIC''LAW_'
-compat_block="$(
+assert_prefix() {
+    local version="$1"
+    local expected="$2"
+    local actual
+    actual="$(_controller_env_prefix "${version}")"
+    if [ "${actual}" != "${expected}" ]; then
+        echo "FAIL: expected ${version} to use ${expected}, got ${actual}" >&2
+        exit 1
+    fi
+}
+
+AGENTTEAMS_KNOWN_STABLE_VERSION="v1.1.2"
+assert_prefix "v1.1.2" "${legacy_prefix}"
+assert_prefix "latest" "${legacy_prefix}"
+assert_prefix "v1.2.0" "AGENTTEAMS_"
+assert_prefix "v1.2.0-beta.1" "AGENTTEAMS_"
+assert_prefix "v1.3.0" "AGENTTEAMS_"
+
+controller_env_block="$(
     sed -n \
-        '/# Begin pre-v1.2 image compatibility/,/# End pre-v1.2 image compatibility/p' \
+        '/        # Controller env args/,/        # shellcheck disable=SC2086/p' \
         "${INSTALLER}"
 )"
 
@@ -59,10 +78,15 @@ for suffix in \
     DOCKER_NETWORK \
     RESOURCE_PREFIX
 do
-    if ! grep -Fq "${legacy_prefix}${suffix}=" <<<"${compat_block}"; then
-        echo "FAIL: legacy compatibility block is missing ${legacy_prefix}${suffix}" >&2
+    if ! grep -Fq "\${_ctrl_env_prefix}${suffix}=" <<<"${controller_env_block}"; then
+        echo "FAIL: controller env block does not select ${suffix} through one versioned prefix" >&2
+        exit 1
+    fi
+    if grep -Fq "\"AGENTTEAMS_${suffix}=" <<<"${controller_env_block}" ||
+        grep -Fq "\"${legacy_prefix}${suffix}=" <<<"${controller_env_block}"; then
+        echo "FAIL: controller env block injects an additional fixed-prefix ${suffix}" >&2
         exit 1
     fi
 done
 
-echo "PASS: installer injects legacy image env only below v1.2.0"
+echo "PASS: installer selects exactly one controller env contract by image version"
