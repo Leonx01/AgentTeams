@@ -61,7 +61,8 @@ TASK_ACCEPTANCE=$(finite_task_acceptance_instruction "${TEST_WORKER_RUNTIME}" "$
 START_SYNC=$(finite_task_sync_instruction "${TEST_WORKER_RUNTIME}" "${START_FILE}")
 RESULT_SYNC=$(finite_task_sync_instruction "${TEST_WORKER_RUNTIME}" "${RESULT_FILE}")
 TASK_COMPLETION=$(finite_task_completion_instruction "${TEST_WORKER_RUNTIME}" "${TASK_ID}" \
-    "Implemented the original and supplementary requirements" "[\"${RESULT_FILE}\"]")
+    "Implemented the original and supplementary requirements" "[\"${RESULT_FILE}\"]" \
+    "${ALICE_ROOM}" "${MANAGER_USER}")
 
 minio_setup
 _cleanup_task_artifacts() {

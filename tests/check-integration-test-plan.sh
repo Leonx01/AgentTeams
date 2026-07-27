@@ -202,12 +202,16 @@ copaw_acceptance=$(finite_task_acceptance_instruction copaw task-check)
 hermes_acceptance=$(finite_task_acceptance_instruction hermes task-check)
 copaw_completion=$(finite_task_completion_instruction copaw task-check summary '[]')
 hermes_completion=$(finite_task_completion_instruction hermes task-check summary '[]')
+openclaw_completion=$(finite_task_completion_instruction openclaw task-check summary '[]' \
+    '!worker-room:matrix.test' '@manager:matrix.test')
 if ! printf '%s' "${copaw_acceptance}" | grep -Fq 'taskflow action ack_task' ||
     printf '%s' "${hermes_acceptance}" | grep -Fq 'taskflow action ack_task' ||
     ! printf '%s' "${hermes_acceptance}" | grep -Fq 'Do not invoke taskflow' ||
     ! printf '%s' "${copaw_completion}" | grep -Fq 'taskflow action submit_task' ||
     printf '%s' "${hermes_completion}" | grep -Fq 'taskflow action submit_task' ||
-    ! printf '%s' "${hermes_completion}" | grep -Fq 'STATUS: SUCCESS'; then
+    ! printf '%s' "${hermes_completion}" | grep -Fq 'STATUS: SUCCESS' ||
+    ! printf '%s' "${openclaw_completion}" | grep -Fq 'message tool with channel=matrix and target=room:!worker-room:matrix.test' ||
+    ! printf '%s' "${openclaw_completion}" | grep -Fq '@manager:matrix.test TASK_COMPLETED: task-check'; then
     fail "finite-task protocol helper selected an unsupported Worker lifecycle"
 fi
 finite_state_line=$(grep -n -m1 -- '--action add-finite' "${finite_tasks_doc}" | cut -d: -f1)
@@ -241,6 +245,10 @@ fi
 if ! grep -Fq 'wait_for_manager_task_state true 30' "${assign_task_test}" ||
     ! grep -Fq 'wait_for_manager_task_state false 60' "${assign_task_test}"; then
     fail "test 03 must finish the Manager task lifecycle before test 04 starts"
+fi
+if ! grep -Fq '"Processed ${SPEC_MARKER}" '\''[]'\'' "${ALICE_ROOM}" "${MANAGER_USER}")' \
+    "${assign_task_test}"; then
+    fail "test 03 must give OpenClaw a non-streamed completion route that can wake the Manager"
 fi
 if ! grep -A5 -F 'Alice did not submit a successful result within 120s' \
     "${assign_task_test}" | grep -Fq 'exit 1'; then
@@ -277,6 +285,9 @@ fi
 if ! grep -Fq 'wait_for_manager_task_state true 30' "${human_intervene_test}" ||
     ! grep -Fq 'wait_for_manager_task_state false 60' "${human_intervene_test}"; then
     fail "test 04 must verify Manager state registration and completion before the next heartbeat"
+fi
+if ! grep -Fq '"${ALICE_ROOM}" "${MANAGER_USER}")' "${human_intervene_test}"; then
+    fail "test 04 must give OpenClaw a non-streamed completion route that can wake the Manager"
 fi
 if ! grep -Fq 'matrix_wait_for_mentioned_reply_matching_since' "${human_intervene_test}" ||
     ! grep -Fq 'visibly @mention exact Matrix ID ${ALICE_MATRIX_ID}' "${human_intervene_test}"; then

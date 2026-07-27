@@ -38,6 +38,8 @@ finite_task_completion_instruction() {
     local task_id="$2"
     local summary="$3"
     local deliverables="$4"
+    local room_id="${5:-}"
+    local coordinator="${6:-}"
 
     case "${runtime}" in
         copaw)
@@ -45,6 +47,21 @@ finite_task_completion_instruction() {
                 "Submit the result with taskflow action submit_task and this inline payload:" \
                 "{\"taskId\":\"${task_id}\",\"status\":\"SUCCESS\",\"summary\":\"${summary}\",\"deliverables\":${deliverables},\"notes\":[]}" \
                 "Do not edit result.md directly because taskflow owns and renders that file."
+            ;;
+        openclaw)
+            printf '%s\n' \
+                "Write shared/tasks/${task_id}/result.md with these exact protocol lines:" \
+                "STATUS: SUCCESS" \
+                "SUMMARY: ${summary}" \
+                "DELIVERABLES: ${deliverables}" \
+                "Then sync the whole shared/tasks/${task_id}/ directory to MinIO using your runtime-specific file-sync procedure." \
+                "Do not invoke taskflow; it is only available to CoPaw Workers."
+            if [ -n "${room_id}" ] && [ -n "${coordinator}" ]; then
+                printf '%s\n' \
+                    "After the sync succeeds, use the message tool with channel=matrix and target=room:${room_id} to send this exact completion notification:" \
+                    "${coordinator} TASK_COMPLETED: ${task_id} - ${summary}" \
+                    "Send it once through the message tool; do not rely on a streamed final reply to notify the coordinator."
+            fi
             ;;
         *)
             printf '%s\n' \

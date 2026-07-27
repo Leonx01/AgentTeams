@@ -39,6 +39,13 @@ wait_for_manager_agent_ready 300 "${DM_ROOM}" "${ADMIN_TOKEN}" || {
 
 # Alice container should be running from test-02; wait to ensure it's up before snapshot
 wait_for_worker_container "alice" 60
+ALICE_ROOM=$(get_worker_room_id "alice")
+assert_not_empty "${ALICE_ROOM}" "Alice worker room is available"
+if [ -z "${ALICE_ROOM}" ]; then
+    test_teardown "03-assign-task"
+    test_summary
+    exit 1
+fi
 METRICS_BASELINE=$(snapshot_baseline "alice")
 TASK_ID="assign-task-$(date +%s)-$$"
 TASK_DIR="shared/tasks/${TASK_ID}"
@@ -49,7 +56,7 @@ TASK_FIXTURE_DIR=$(mktemp -d)
 TEST_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-openclaw}"
 TASK_ACCEPTANCE=$(finite_task_acceptance_instruction "${TEST_WORKER_RUNTIME}" "${TASK_ID}")
 TASK_COMPLETION=$(finite_task_completion_instruction "${TEST_WORKER_RUNTIME}" "${TASK_ID}" \
-    "Processed ${SPEC_MARKER}" '[]')
+    "Processed ${SPEC_MARKER}" '[]' "${ALICE_ROOM}" "${MANAGER_USER}")
 
 minio_setup
 _cleanup_task_artifacts() {
