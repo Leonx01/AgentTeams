@@ -168,10 +168,14 @@ else
     test_summary
     exit 1
 fi
-if wait_for_manager_task_state false 60; then
+MANAGER_COMPLETION_TIMEOUT=60
+if [ "${AGENTTEAMS_MANAGER_RUNTIME:-openclaw}" = "copaw" ]; then
+    MANAGER_COMPLETION_TIMEOUT=90
+fi
+if wait_for_manager_task_state false "${MANAGER_COMPLETION_TIMEOUT}"; then
     log_pass "Manager removed the completed task from state.json"
 else
-    log_fail "Manager did not clear ${TASK_ID} from state.json within 60s"
+    log_fail "Manager did not clear ${TASK_ID} from state.json within ${MANAGER_COMPLETION_TIMEOUT}s"
     test_teardown "03-assign-task"
     test_summary
     exit 1

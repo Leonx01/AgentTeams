@@ -253,7 +253,10 @@ if ! grep -Fq 'Register it with manage-state.sh before sending any Matrix messag
     fail "test 03 must make the state-before-dispatch ordering explicit to the Manager"
 fi
 if ! grep -Fq 'wait_for_manager_task_state true 30' "${assign_task_test}" ||
-    ! grep -Fq 'wait_for_manager_task_state false 60' "${assign_task_test}"; then
+    ! grep -Fq 'MANAGER_COMPLETION_TIMEOUT=60' "${assign_task_test}" ||
+    ! grep -Fq 'MANAGER_COMPLETION_TIMEOUT=90' "${assign_task_test}" ||
+    ! grep -Fq 'wait_for_manager_task_state false "${MANAGER_COMPLETION_TIMEOUT}"' \
+        "${assign_task_test}"; then
     fail "test 03 must finish the Manager task lifecycle before test 04 starts"
 fi
 if ! grep -Fq '"Processed ${SPEC_MARKER}" '\''[]'\'' "${ALICE_ROOM}" "${MANAGER_USER}")' \
