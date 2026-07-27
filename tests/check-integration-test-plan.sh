@@ -47,6 +47,26 @@ EOF
 assert_eq "${expected_controller_plan}" "${controller_plan}" \
     "controller shard must use natural numeric order with cleanup last"
 
+runtime_specific_controller_plan=$(GITHUB_ACTIONS=true bash "${RUNNER}" \
+    --test-filter "15 17 18 19 20 22 24 25 100" \
+    --list-tests)
+
+expected_runtime_specific_controller_plan=$(cat <<'EOF'
+test-15-import-worker-zip.sh
+test-17-worker-config-verify.sh
+test-18-team-config-verify.sh
+test-19-human-and-team-admin.sh
+test-20-inline-worker-config.sh
+test-22-delete-worker-cleanup.sh
+test-24-skills-management.sh
+test-25-name-validation.sh
+test-100-cleanup.sh
+EOF
+)
+
+assert_eq "${expected_runtime_specific_controller_plan}" "${runtime_specific_controller_plan}" \
+    "CI must preserve the declarative shard filter instead of injecting runtime-switch coverage"
+
 llm_plan=$(bash "${RUNNER}" --test-filter "01 02 03 04 05 06" --list-tests)
 if echo "${llm_plan}" | grep -q 'test-100-cleanup.sh'; then
     fail "cleanup must not be injected into a shard that did not select it"
