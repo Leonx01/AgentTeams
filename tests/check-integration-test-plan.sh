@@ -381,6 +381,9 @@ fi
 if ! grep -Fq 'matrix_wait_for_user_joined "${MANAGER_TOKEN}" "${PROJECT_ROOM}"' "${git_collab_test}"; then
     fail "test 14 must verify project-room membership before waiting for git progress"
 fi
+if ! grep -Fq 'AGENTTEAMS_MANAGER_MATRIX_TOKEN' "${git_collab_test}"; then
+    fail "test 14 must read the controller-injected Manager token without racing config-file sync"
+fi
 if ! grep -Fq 'MEMBERSHIP_PIDS+=("$!")' "${git_collab_test}"; then
     fail "test 14 must verify project-room memberships concurrently"
 fi
@@ -393,12 +396,12 @@ if ! grep -Fq 'overall timeout: 420s, no-activity timeout: 90s' "${git_collab_te
     ! grep -Fq 'PROJECT_ACTIVITY=$(echo "${PROJECT_MESSAGES}"' "${git_collab_test}"; then
     fail "test 14 must use a bounded activity-aware collaboration deadline"
 fi
-if ! grep -Fq 'matrix_send_mention_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}"' "${git_collab_test}" ||
+if ! grep -Fq 'matrix_send_mention_message "${ADMIN_TOKEN}" "${PROJECT_ROOM}"' "${git_collab_test}" ||
     ! grep -Fq '"@alice:${TEST_MATRIX_DOMAIN}" "${PHASE1_MESSAGE}"' "${git_collab_test}" ||
     ! grep -Fq 'PHASE2_SENT=1' "${git_collab_test}" ||
     ! grep -Fq 'PHASE3_SENT=1' "${git_collab_test}" ||
     ! grep -Fq 'PHASE4_SENT=1' "${git_collab_test}"; then
-    fail "test 14 must schedule all four phases with explicit mentions from observed git progress"
+    fail "test 14 must have the human coordinator schedule all four phases with explicit mentions from observed git progress"
 fi
 if ! grep -Fq 'PHASE3_BASE_SHA="${FEATURE_SHA}"' "${git_collab_test}" ||
     ! grep -Fq '[ "${FEATURE_SHA}" != "${PHASE3_BASE_SHA}" ]' "${git_collab_test}"; then

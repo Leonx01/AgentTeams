@@ -151,7 +151,7 @@ TASK_DESCRIPTION="Prepare the shared room for a bounded four-phase git collabora
 Workers with usernames exactly 'alice', 'bob', and 'charlie' are already provisioned. Reuse them exactly as-is.
 Create a shared project room named EXACTLY '${PROJECT_NAME}' with alice, bob, charlie, and the human admin by using create-project.sh.
 
-The integration coordinator will send the phase instructions in that room after verifying membership. Do not create task specs, clone the repository, or assign phases yourself. Stay in the room and observe the reports. After charlie reports PHASE4_DONE, post exactly 'GIT_COLLAB_COMPLETE ${TEST_RUN_ID}' and @mention the human admin."
+The human integration coordinator will send the phase instructions in that room after verifying membership. Do not create task specs, clone the repository, assign phases yourself, or react to Worker progress messages. Stay in the room and wait for the human integration coordinator to confirm that all phases are complete. Then post exactly 'GIT_COLLAB_COMPLETE ${TEST_RUN_ID}' and @mention the human admin."
 
 PHASE1_MESSAGE="Phase 1 for collaboration ${TEST_RUN_ID}. Use these instructions directly; do not wait for file sync.
 - This phase is assigned only to alice. If you are not alice, do not perform it.
@@ -204,13 +204,13 @@ fi
 
 log_section "Wait for Workflow State"
 
-# Get Manager's Matrix token (retry until openclaw.json is written)
+# Get the controller-injected Manager Matrix token without racing config sync.
 log_info "Waiting for Manager token (timeout: 120s)..."
 MANAGER_TOKEN=""
 DEADLINE=$(( $(date +%s) + 120 ))
 while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
     MANAGER_TOKEN=$(docker exec "${TEST_AGENT_CONTAINER}" \
-        jq -r '.channels.matrix.accessToken // empty' /root/manager-workspace/openclaw.json 2>/dev/null || true)
+        sh -c 'printf "%s" "${AGENTTEAMS_MANAGER_MATRIX_TOKEN:-}"' 2>/dev/null || true)
     [ -n "${MANAGER_TOKEN}" ] && break
     sleep 5
 done
@@ -262,7 +262,7 @@ fi
 
 PROJECT_BASELINE_EVENT=$(matrix_latest_reply_event "${MANAGER_TOKEN}" "${PROJECT_ROOM}" "@manager")
 
-matrix_send_mention_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" \
+matrix_send_mention_message "${ADMIN_TOKEN}" "${PROJECT_ROOM}" \
     "@alice:${TEST_MATRIX_DOMAIN}" "${PHASE1_MESSAGE}" >/dev/null
 PHASE2_SENT=0
 PHASE3_SENT=0
@@ -320,14 +320,14 @@ while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
 
     if [ -n "${FEATURE_SHA}" ] && [ "${PHASE1_DONE_SEEN}" -eq 1 ] &&
         [ "${PHASE2_SENT}" -eq 0 ]; then
-        matrix_send_mention_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" \
+        matrix_send_mention_message "${ADMIN_TOKEN}" "${PROJECT_ROOM}" \
             "@bob:${TEST_MATRIX_DOMAIN}" "${PHASE2_MESSAGE}" >/dev/null
         PHASE2_SENT=1
     fi
     if [ -n "${REVIEW_SHA}" ] && [ "${PHASE2_DONE_SEEN}" -eq 1 ] &&
         [ "${PHASE3_SENT}" -eq 0 ]; then
         PHASE3_BASE_SHA="${FEATURE_SHA}"
-        matrix_send_mention_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" \
+        matrix_send_mention_message "${ADMIN_TOKEN}" "${PROJECT_ROOM}" \
             "@alice:${TEST_MATRIX_DOMAIN}" "${PHASE3_MESSAGE}" >/dev/null
         PHASE3_SENT=1
     fi
@@ -347,7 +347,7 @@ while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
   - [x] Goals section exists
   - [x] Review request addressed
 - Commit 'verify: proposal review checklist', push '${TEST_BRANCH}', and report PHASE4_DONE ${TEST_RUN_ID}."
-        matrix_send_mention_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" \
+        matrix_send_mention_message "${ADMIN_TOKEN}" "${PROJECT_ROOM}" \
             "@charlie:${TEST_MATRIX_DOMAIN}" "${PHASE4_MESSAGE}" >/dev/null
         PHASE4_SENT=1
     fi
@@ -418,6 +418,10 @@ if [ "${TESTS_FAILED}" -gt 0 ]; then
 fi
 
 log_info "Waiting for the correlated completion marker (timeout: 120s)..."
+matrix_send_mention_message "${ADMIN_TOKEN}" "${PROJECT_ROOM}" \
+    "@manager:${TEST_MATRIX_DOMAIN}" \
+    "All four phases are complete. Post exactly 'GIT_COLLAB_COMPLETE ${TEST_RUN_ID}' and @mention the human admin." \
+    >/dev/null
 COMPLETION_MSG=$(matrix_read_messages "${MANAGER_TOKEN}" "${PROJECT_ROOM}" 50 2>/dev/null | \
     jq -r --arg marker "GIT_COLLAB_COMPLETE ${TEST_RUN_ID}" \
     '[.chunk[] | select(.sender | startswith("@manager")) | .content.body | select(contains($marker))] | first // empty' \
