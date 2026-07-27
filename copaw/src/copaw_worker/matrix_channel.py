@@ -69,6 +69,10 @@ _TEAM_LEADER_WORKER_ASSIGNMENT_RE = re.compile(
     r"start\s+(?:by\s+)?(?:designing|implementing|writing|testing|building|handling|reviewing|creating|investigating)"
     r")\b",
 )
+_TASK_COMPLETED_RE = re.compile(
+    r"\bTASK_COMPLETED\b|\btask\b.{0,160}\bcompleted\s+successfully\b",
+    re.IGNORECASE | re.DOTALL,
+)
 
 # Token refresh tunables
 MAX_TOKEN_REFRESH_RETRIES = 3
@@ -1757,7 +1761,15 @@ class MatrixChannel(BaseChannel):
                 rerouted_room_id,
             )
             room_id = rerouted_room_id
-        self._apply_mention(content, room_id, explicit_mentions)
+        fallback_user_id = None
+        if not explicit_mentions and _TASK_COMPLETED_RE.search(text):
+            fallback_user_id = (meta or {}).get("sender_id")
+        self._apply_mention(
+            content,
+            room_id,
+            explicit_mentions,
+            fallback_user_id,
+        )
 
         try:
             await self._client.room_send(

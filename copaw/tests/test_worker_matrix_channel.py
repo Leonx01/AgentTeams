@@ -164,3 +164,41 @@ def test_worker_channel_suppresses_no_reply(tmp_path, monkeypatch):
     asyncio.run(ch.send("!leader-dm:hs.local", "NO_REPLY"))
 
     assert ch._client.sent == []
+
+
+def test_worker_channel_routes_task_completion_to_assignment_sender():
+    ch = _make_channel("@alice:hs.local")
+
+    asyncio.run(
+        ch.send(
+            "!task-room:hs.local",
+            (
+                "The task has been submitted.\n\n"
+                "**TASK_COMPLETED** - Result: shared/tasks/demo/result.md"
+            ),
+            {"sender_id": "@manager:hs.local"},
+        ),
+    )
+
+    content = ch._client.sent[0][2]
+    assert content["m.mentions"] == {
+        "user_ids": ["@manager:hs.local"],
+    }
+    assert "@manager:hs.local" in content["body"]
+
+
+def test_worker_channel_routes_natural_language_task_completion_to_sender():
+    ch = _make_channel("@alice:hs.local")
+
+    asyncio.run(
+        ch.send(
+            "!task-room:hs.local",
+            "Task **demo** completed successfully! Result submitted.",
+            {"sender_id": "@manager:hs.local"},
+        ),
+    )
+
+    content = ch._client.sent[0][2]
+    assert content["m.mentions"] == {
+        "user_ids": ["@manager:hs.local"],
+    }

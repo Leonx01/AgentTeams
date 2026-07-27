@@ -198,6 +198,11 @@ func (r *WorkerReconciler) reconcileNormal(ctx context.Context, w *v1beta1.Worke
 		return reconcile.Result{}, err
 	}
 	mctx := r.workerMemberContextWithSpec(w, effectiveSpec, resourceSpec, updateStrategy)
+	if _, teamName, inTeam, err := r.teamMembershipForWorker(ctx, w.Namespace, w.Name); err != nil {
+		return reconcile.Result{}, err
+	} else if inTeam {
+		mctx.TeamName = teamName
+	}
 
 	if effectiveSpec.ModelProvider != "" && r.GatewayClient != nil {
 		info, err := r.GatewayClient.ResolveModelProvider(ctx, effectiveSpec.ModelProvider)
@@ -410,13 +415,18 @@ func (r *WorkerReconciler) reconcileManagerAccess(ctx context.Context, w *v1beta
 }
 
 func (r *WorkerReconciler) teamRoleForWorker(ctx context.Context, namespace, workerName string) (MemberRole, bool, error) {
+	role, _, inTeam, err := r.teamMembershipForWorker(ctx, namespace, workerName)
+	return role, inTeam, err
+}
+
+func (r *WorkerReconciler) teamMembershipForWorker(ctx context.Context, namespace, workerName string) (MemberRole, string, bool, error) {
 	if r.Client == nil || workerName == "" {
-		return "", false, nil
+		return "", "", false, nil
 	}
 
 	var teams v1beta1.TeamList
 	if err := r.List(ctx, &teams, client.InNamespace(namespace)); err != nil {
-		return "", false, fmt.Errorf("list teams: %w", err)
+		return "", "", false, fmt.Errorf("list teams: %w", err)
 	}
 
 	for _, team := range teams.Items {
@@ -425,12 +435,12 @@ func (r *WorkerReconciler) teamRoleForWorker(ctx context.Context, namespace, wor
 				continue
 			}
 			if ref.Role == RoleTeamLeader.String() {
-				return RoleTeamLeader, true, nil
+				return RoleTeamLeader, team.Spec.EffectiveTeamName(team.Name), true, nil
 			}
-			return RoleTeamWorker, true, nil
+			return RoleTeamWorker, team.Spec.EffectiveTeamName(team.Name), true, nil
 		}
 	}
-	return "", false, nil
+	return "", "", false, nil
 }
 
 func (r *WorkerReconciler) effectiveWorkerSpec(_ context.Context, w *v1beta1.Worker, _ bool) (v1beta1.WorkerSpec, *v1beta1.AgentResourceRequirements, string, error) {

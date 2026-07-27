@@ -270,10 +270,12 @@ fi
 # ============================================================
 log_section "Verify Team Context Block"
 
+wait_agent_file_contains "${TEST_W1}" "AGENTS.md" "Team Admin" 120 || true
 W1_AGENTS=$(exec_in_manager mc cat "${STORAGE_PREFIX}/agents/${TEST_W1}/AGENTS.md" 2>/dev/null || echo "")
 W1_CTX=$(echo "${W1_AGENTS}" | sed -n '/agentteams-team-context-start/,/agentteams-team-context-end/p')
 assert_contains "${W1_CTX}" "Team Admin" "Worker team-context mentions Team Admin"
 
+wait_agent_file_contains "${TEST_LEADER}" "AGENTS.md" "Team Admin" 120 || true
 LEADER_AGENTS=$(exec_in_manager mc cat "${STORAGE_PREFIX}/agents/${TEST_LEADER}/AGENTS.md" 2>/dev/null || echo "")
 LEADER_CTX=$(echo "${LEADER_AGENTS}" | sed -n '/agentteams-team-context-start/,/agentteams-team-context-end/p')
 assert_contains "${LEADER_CTX}" "Team Admin" "Leader team-context mentions Team Admin"

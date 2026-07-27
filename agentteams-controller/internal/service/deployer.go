@@ -1245,10 +1245,13 @@ func (d *Deployer) prepareAndPushAgentsMD(ctx context.Context, workerName, agent
 		content = string(existing)
 	}
 	logger.Info("AGENTS.md source selected", "worker", workerName, "source", source, "bytes", len(content), "hasBuiltinMarkers", strings.Contains(content, "<!-- agentteams-builtin-start -->"))
-	if len(builtinContent) > 0 {
+	preserveTeamLeaderBuiltin := role == "standalone" && hasTeamLeaderContext(content)
+	if len(builtinContent) > 0 && !preserveTeamLeaderBuiltin {
 		sourceBytes := len(content)
 		content = agentconfig.MergeBuiltinSection(content, string(builtinContent))
 		logger.Info("AGENTS.md builtin section merged", "worker", workerName, "source", source, "builtinBytes", len(builtinContent), "sourceBytes", sourceBytes, "resultBytes", len(content))
+	} else if preserveTeamLeaderBuiltin {
+		logger.Info("AGENTS.md team leader builtin preserved", "worker", workerName, "role", role, "reason", "worker is referenced as a Team Leader")
 	}
 
 	// Team leaders get their coordination context from TeamReconciler.InjectCoordinationContext
@@ -1295,6 +1298,18 @@ func hasTeamContext(content string) bool {
 	return strings.Contains(content, "Do NOT @mention Manager") ||
 		strings.Contains(content, "- **Team Workers**:") ||
 		strings.Contains(content, "- **Team Room**:")
+}
+
+func hasTeamLeaderContext(content string) bool {
+	builtinStart := strings.Index(content, "<!-- agentteams-builtin-start -->")
+	builtinEnd := strings.LastIndex(content, "<!-- agentteams-builtin-end -->")
+	if builtinStart < 0 || builtinEnd <= builtinStart {
+		return false
+	}
+	builtin := content[builtinStart:builtinEnd]
+	return strings.Contains(builtin, "# Team Leader Agent") ||
+		(strings.Contains(content, "<!-- agentteams-team-context-start -->") &&
+			strings.Contains(content, "- **Team Room**:"))
 }
 
 // pushBuiltinSkills copies builtin skill directories to the worker's OSS prefix.

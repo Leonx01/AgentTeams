@@ -1380,6 +1380,41 @@ async def test_ack_task_returns_spec_and_calls_sync(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ack_task_accepts_legacy_manager_finite_meta(tmp_path, monkeypatch):
+    working_dir = tmp_path / "worker" / ".copaw"
+    workspace = working_dir / "workspaces" / "default"
+    monkeypatch.setenv("COPAW_WORKING_DIR", str(working_dir))
+    _set_actor(monkeypatch, "@worker:domain")
+    _mock_sync(monkeypatch)
+
+    task_dir = workspace / "shared" / "tasks" / "legacy-01"
+    task_dir.mkdir(parents=True)
+    (task_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "taskId": "legacy-01",
+                "assignedTo": "worker",
+                "status": "assigned",
+                "assignedAt": "2026-07-27T00:00:00+08:00",
+            },
+        ),
+    )
+    (task_dir / "spec.md").write_text("Return a structured result.")
+
+    response = await taskflow(
+        action="ack_task",
+        payload={"taskId": "legacy-01"},
+    )
+    payload = _response_json(response)
+
+    assert payload["ok"] is True, payload
+    assert payload["task"]["project_id"] == "standalone"
+    assert payload["task"]["task_title"] == "legacy-01"
+    assert payload["task"]["status"] == "in_progress"
+    assert payload["task"]["assigned_at"] == "2026-07-27T00:00:00+08:00"
+
+
+@pytest.mark.asyncio
 async def test_submit_task_calls_sync_and_stat(tmp_path, monkeypatch):
     working_dir = tmp_path / "worker" / ".copaw"
     workspace = working_dir / "workspaces" / "default"

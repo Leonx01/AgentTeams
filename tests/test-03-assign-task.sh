@@ -44,23 +44,70 @@ TASK_DIR="shared/tasks/${TASK_ID}"
 TASK_SPEC="${TASK_DIR}/spec.md"
 TASK_RESULT="${TASK_DIR}/result.md"
 SPEC_MARKER="TASK_SPEC_${TASK_ID}"
-RESULT_MARKER="TASK_RESULT_${TASK_ID}"
+TASK_FIXTURE_DIR=$(mktemp -d)
 
 minio_setup
 _cleanup_task_artifacts() {
     exec_in_manager mc rm -r --force \
         "$(minio_storage_prefix)/${TASK_DIR}/" >/dev/null 2>&1 || true
+    rm -rf "${TASK_FIXTURE_DIR}"
+}
+wait_for_manager_task_state() {
+    local expected_active="$1"
+    local timeout="$2"
+    local elapsed=0
+    local count
+
+    while [ "${elapsed}" -lt "${timeout}" ]; do
+        count=$(exec_in_agent jq -r --arg id "${TASK_ID}" \
+            '[.active_tasks[]? | select(.task_id == $id)] | length' \
+            /root/manager-workspace/state.json 2>/dev/null) || count=""
+        if [ "${expected_active}" = "true" ] && [ "${count}" = "1" ]; then
+            return 0
+        fi
+        if [ "${expected_active}" = "false" ] && [ "${count}" = "0" ]; then
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    return 1
 }
 trap _cleanup_task_artifacts EXIT
 
-MANAGER_BASELINE_EVENT=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager")
-matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" \
-    "Assign Alice this bounded task with ID ${TASK_ID}:
-1. Create the task brief '${TASK_SPEC}' containing exactly '${SPEC_MARKER}'.
-2. Ask Alice to read that brief and write '${TASK_RESULT}' containing exactly '${RESULT_MARKER}'.
-3. Reply with the task ID after assignment.
+jq -n --arg task_id "${TASK_ID}" '{
+    task_id: $task_id,
+    project_id: "standalone",
+    task_title: "Verify finite task assignment",
+    assigned_to: "alice",
+    status: "assigned"
+}' > "${TASK_FIXTURE_DIR}/meta.json"
+cat > "${TASK_FIXTURE_DIR}/spec.md" <<EOF
+# Finite task assignment ${TASK_ID}
 
-Do not add other deliverables."
+${SPEC_MARKER}
+
+1. Accept this task with taskflow action ack_task and payload {"taskId":"${TASK_ID}"}.
+2. Submit the result with taskflow action submit_task and this inline payload:
+   {"taskId":"${TASK_ID}","status":"SUCCESS","summary":"Processed ${SPEC_MARKER}","deliverables":[],"notes":[]}
+3. Do not edit result.md directly because taskflow owns and renders that file.
+EOF
+docker cp "${TASK_FIXTURE_DIR}/meta.json" \
+    "${TEST_CONTROLLER_CONTAINER:-agentteams-controller}:/tmp/${TASK_ID}-meta.json" >/dev/null
+docker cp "${TASK_FIXTURE_DIR}/spec.md" \
+    "${TEST_CONTROLLER_CONTAINER:-agentteams-controller}:/tmp/${TASK_ID}-spec.md" >/dev/null
+exec_in_manager mc cp "/tmp/${TASK_ID}-meta.json" \
+    "$(minio_storage_prefix)/${TASK_DIR}/meta.json" >/dev/null
+exec_in_manager mc cp "/tmp/${TASK_ID}-spec.md" \
+    "$(minio_storage_prefix)/${TASK_SPEC}" >/dev/null
+exec_in_manager rm -f "/tmp/${TASK_ID}-meta.json" "/tmp/${TASK_ID}-spec.md"
+
+MANAGER_BASELINE_EVENT=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager")
+read -r -d '' ASSIGN_MESSAGE <<EOF || true
+Assign Alice this bounded task with ID ${TASK_ID}.
+A taskflow-compatible meta.json and spec.md already exist under '${TASK_DIR}' in shared storage. Do not recreate or replace its task metadata. Sync and inspect the existing files. Register it with manage-state.sh before sending any Matrix message to Alice. Only after the add-finite command succeeds, dispatch the full spec to Alice's worker room, then reply with ${TASK_ID}.
+EOF
+matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" "${ASSIGN_MESSAGE}"
 
 log_info "Waiting for Manager to process task..."
 REPLY=$(matrix_wait_for_reply_matching_since "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager" \
@@ -71,6 +118,14 @@ assert_not_empty "${REPLY}" "Manager acknowledged task assignment"
 assert_contains "${REPLY}" "${TASK_ID}" "Manager acknowledgment is correlated to this task"
 if [ -z "${REPLY}" ]; then
     dump_manager_dm_messages "${ADMIN_TOKEN}" "${DM_ROOM}" "${TASK_ID} acknowledgment missing"
+    test_teardown "03-assign-task"
+    test_summary
+    exit 1
+fi
+if wait_for_manager_task_state true 30; then
+    log_pass "Manager registered the finite task in state.json"
+else
+    log_fail "Manager did not register ${TASK_ID} in state.json within 30s"
     test_teardown "03-assign-task"
     test_summary
     exit 1
@@ -91,12 +146,25 @@ fi
 
 log_section "Verify Worker Completion"
 
-if minio_wait_for_content "${TASK_RESULT}" "${RESULT_MARKER}" 300; then
+if minio_wait_for_content "${TASK_RESULT}" "STATUS: SUCCESS" 120; then
     RESULT_CONTENT=$(minio_read_file "${TASK_RESULT}")
-    assert_contains "${RESULT_CONTENT}" "${RESULT_MARKER}" \
-        "Alice completed the correlated task"
+    assert_contains "${RESULT_CONTENT}" "STATUS: SUCCESS" \
+        "Alice submitted a successful result for the correlated task"
+    assert_contains "${RESULT_CONTENT}" "SUMMARY:" \
+        "Alice submitted a structured taskflow result"
 else
-    log_fail "Alice result did not contain the correlated marker within 300s: ${TASK_RESULT}"
+    log_fail "Alice did not submit a successful result within 120s: ${TASK_RESULT}"
+    test_teardown "03-assign-task"
+    test_summary
+    exit 1
+fi
+if wait_for_manager_task_state false 60; then
+    log_pass "Manager removed the completed task from state.json"
+else
+    log_fail "Manager did not clear ${TASK_ID} from state.json within 60s"
+    test_teardown "03-assign-task"
+    test_summary
+    exit 1
 fi
 
 log_section "Collect Metrics"

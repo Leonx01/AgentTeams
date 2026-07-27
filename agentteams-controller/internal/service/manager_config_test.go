@@ -26,7 +26,7 @@ func TestPutManagerConfig_PreservesUserPluginEntries(t *testing.T) {
 			}
 		}
 	}`)
-	if err := fake.PutObject(ctx, "agents/manager/openclaw.json", existing); err != nil {
+	if err := fake.PutObject(ctx, "manager/openclaw.json", existing); err != nil {
 		t.Fatalf("seed OSS: %v", err)
 	}
 
@@ -56,7 +56,7 @@ func TestPutManagerConfig_PreservesUserPluginEntries(t *testing.T) {
 		t.Fatalf("PutManagerConfig: %v", err)
 	}
 
-	out, err := fake.GetObject(ctx, "agents/manager/openclaw.json")
+	out, err := fake.GetObject(ctx, "manager/openclaw.json")
 	if err != nil {
 		t.Fatalf("GetObject: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestPutManagerConfig_NoExistingOSSObject(t *testing.T) {
 		t.Fatalf("PutManagerConfig: %v", err)
 	}
 
-	out, err := fake.GetObject(context.Background(), "agents/manager/openclaw.json")
+	out, err := fake.GetObject(context.Background(), "manager/openclaw.json")
 	if err != nil {
 		t.Fatalf("GetObject: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestPutManagerConfig_NoExistingOSSObject(t *testing.T) {
 func TestPutManagerConfig_MalformedExistingJSON_FallsBackToGenerated(t *testing.T) {
 	fake := ossfake.NewMemory()
 	ctx := context.Background()
-	if err := fake.PutObject(ctx, "agents/manager/openclaw.json", []byte("{not json")); err != nil {
+	if err := fake.PutObject(ctx, "manager/openclaw.json", []byte("{not json")); err != nil {
 		t.Fatalf("seed OSS: %v", err)
 	}
 
@@ -145,7 +145,7 @@ func TestPutManagerConfig_MalformedExistingJSON_FallsBackToGenerated(t *testing.
 		t.Fatalf("PutManagerConfig should swallow malformed existing JSON: %v", err)
 	}
 
-	out, err := fake.GetObject(ctx, "agents/manager/openclaw.json")
+	out, err := fake.GetObject(ctx, "manager/openclaw.json")
 	if err != nil {
 		t.Fatalf("GetObject: %v", err)
 	}
@@ -157,5 +157,46 @@ func TestPutManagerConfig_MalformedExistingJSON_FallsBackToGenerated(t *testing.
 	plugins := got["plugins"].(map[string]interface{})
 	if _, ok := plugins["entries"].(map[string]interface{})["memory-core"]; !ok {
 		t.Errorf("expected generated memory-core entry, got: %v", plugins)
+	}
+}
+
+func TestUpdateManagerGroupAllowFromUsesManagerWorkspacePrefix(t *testing.T) {
+	fake := ossfake.NewMemory()
+	ctx := context.Background()
+	existing := []byte(`{
+		"channels": {
+			"matrix": {
+				"groupAllowFrom": ["@admin:agentteams.local"]
+			}
+		}
+	}`)
+	if err := fake.PutObject(ctx, "manager/openclaw.json", existing); err != nil {
+		t.Fatalf("seed manager config: %v", err)
+	}
+
+	lc := NewManagerConfigStore(ManagerConfigStoreConfig{
+		OSS:          fake,
+		MatrixDomain: "agentteams.local",
+		ManagerName:  "manager",
+	})
+	if err := lc.UpdateManagerGroupAllowFrom(
+		"@alice:agentteams.local",
+		true,
+	); err != nil {
+		t.Fatalf("UpdateManagerGroupAllowFrom: %v", err)
+	}
+
+	out, err := fake.GetObject(ctx, "manager/openclaw.json")
+	if err != nil {
+		t.Fatalf("read manager config: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal manager config: %v", err)
+	}
+	matrix := got["channels"].(map[string]interface{})["matrix"].(map[string]interface{})
+	allow := extractStringSlice(matrix["groupAllowFrom"])
+	if len(allow) != 2 || allow[1] != "@alice:agentteams.local" {
+		t.Fatalf("groupAllowFrom = %v, want admin plus alice", allow)
 	}
 }

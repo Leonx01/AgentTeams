@@ -411,9 +411,13 @@ wait_agent_matrix_allow_contains() {
     local timeout="${4:-120}"
     local elapsed=0
     local storage_prefix="${STORAGE_PREFIX:?STORAGE_PREFIX is required}"
+    local object_path="agents/${agent_name}/openclaw.json"
     local last=""
+    if [ "${agent_name}" = "manager" ]; then
+        object_path="manager/openclaw.json"
+    fi
     while [ "${elapsed}" -lt "${timeout}" ]; do
-        last=$(exec_in_manager mc cat "${storage_prefix}/agents/${agent_name}/openclaw.json" 2>/dev/null | jq -r "${jq_path}[]?" 2>/dev/null)
+        last=$(exec_in_manager mc cat "${storage_prefix}/${object_path}" 2>/dev/null | jq -r "${jq_path}[]?" 2>/dev/null)
         if echo "${last}" | grep -Fq "${matrix_id}"; then
             return 0
         fi
@@ -470,6 +474,10 @@ wait_for_worker_container() {
     local worker="$1"
     local timeout="${2:-120}"
     local container
+    local state
+    local worker_json
+    local controller_state
+    local controller_message
     local elapsed=0
 
     container="$(worker_container_name "${worker}")"
@@ -479,6 +487,20 @@ wait_for_worker_container() {
         if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
             log_info "Worker container '${container}' is running (took ${elapsed}s)"
             return 0
+        fi
+        state="$(docker inspect --format '{{.State.Status}}' "${container}" 2>/dev/null || true)"
+        if [ "${state}" = "exited" ] || [ "${state}" = "dead" ]; then
+            log_info "Worker container '${container}' entered terminal state '${state}' after ${elapsed}s" >&2
+            dump_diagnostics worker "${worker}"
+            return 1
+        fi
+        worker_json="$(exec_in_agent agt get workers "${worker}" -o json 2>/dev/null || true)"
+        controller_state="$(jq -r '.containerState // empty' <<<"${worker_json}" 2>/dev/null || true)"
+        if [ "${controller_state}" = "create_failed" ] || [ "${controller_state}" = "failed" ]; then
+            controller_message="$(jq -r '.message // empty' <<<"${worker_json}" 2>/dev/null || true)"
+            log_info "Worker '${worker}' entered terminal controller state '${controller_state}' after ${elapsed}s: ${controller_message}" >&2
+            dump_diagnostics worker "${worker}"
+            return 1
         fi
         sleep 5
         elapsed=$((elapsed + 5))

@@ -83,6 +83,54 @@ def test_worker_port_can_be_explicit(tmp_path):
     assert config.worker_port == 19090
 
 
+@pytest.mark.anyio
+async def test_team_leader_waits_for_required_role_skills(tmp_path, monkeypatch):
+    async def no_sleep(_seconds):
+        return None
+
+    class FakeSync:
+        def __init__(self):
+            self.pull_count = 0
+            self.local_dir = tmp_path / "alice"
+
+        def list_skills(self):
+            return [
+                "communication",
+                "project-management",
+                "task-management",
+                "team-coordination",
+            ]
+
+        def _is_team_leader(self):
+            return True
+
+        def pull_all(self):
+            self.pull_count += 1
+            for skill in (
+                "project-management",
+                "task-management",
+                "team-coordination",
+            ):
+                skill_dir = self.local_dir / "skills" / skill
+                skill_dir.mkdir(parents=True, exist_ok=True)
+                (skill_dir / "SKILL.md").write_text(f"# {skill}\n")
+            return ["skills/project-management/SKILL.md"]
+
+    monkeypatch.setenv("AGENTTEAMS_WORKER_ROLE", "standalone")
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+    worker = Worker(_config(tmp_path))
+    worker.sync = FakeSync()
+
+    skills = await worker._wait_for_required_role_skills(max_attempts=3)
+
+    assert worker.sync.pull_count == 1
+    assert set(skills) >= {
+        "project-management",
+        "task-management",
+        "team-coordination",
+    }
+
+
 def test_join_pending_matrix_invites_accepts_invited_rooms(tmp_path, monkeypatch):
     import urllib.request
 

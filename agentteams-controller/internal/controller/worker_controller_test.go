@@ -234,6 +234,28 @@ func TestWorkerReconcileDeleteBlocksReferencedTeamMember(t *testing.T) {
 	}
 }
 
+func TestTeamMembershipForWorkerUsesRuntimeTeamName(t *testing.T) {
+	team := &v1beta1.Team{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-cr-a", Namespace: "default"},
+		Spec: v1beta1.TeamSpec{
+			TeamName: "runtime-team-a",
+			WorkerMembers: []v1beta1.TeamWorkerRef{
+				{Name: "lead", Role: RoleTeamLeader.String()},
+				{Name: "dev", Role: RoleTeamWorker.String()},
+			},
+		},
+	}
+	rig := newWorkerRig(t, team)
+
+	role, teamName, inTeam, err := rig.r.teamMembershipForWorker(context.Background(), "default", "dev")
+	if err != nil {
+		t.Fatalf("teamMembershipForWorker: %v", err)
+	}
+	if !inTeam || role != RoleTeamWorker || teamName != "runtime-team-a" {
+		t.Fatalf("membership=(%q,%q,%t), want (worker,runtime-team-a,true)", role, teamName, inTeam)
+	}
+}
+
 func TestReconcileManagerAccessRemovesManagerFromTeamWorkerRoom(t *testing.T) {
 	ctx := context.Background()
 	worker := &v1beta1.Worker{

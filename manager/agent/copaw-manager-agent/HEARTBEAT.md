@@ -62,7 +62,9 @@ Iterate over entries in `active_tasks` with `"type": "finite"`:
   ```
 - Determine if the Worker is making normal progress based on their reply
 - If the Worker has not responded (no response for more than one heartbeat cycle), flag the anomaly in the Room and notify the human admin (see Step 7)
-- If the Worker has replied that the task is complete but meta.json has not been updated, proactively update meta.json (status → completed, fill in completed_at), and remove the entry from `active_tasks`:
+- Never infer finite-task completion from room prose or deliverable presence.
+- Before any terminal transition, verify that `/root/agentteams-fs/shared/tasks/{task-id}/result.md` exists and that result.md starts with `STATUS: SUCCESS` or `STATUS: FAILED`.
+- If the Worker claims completion without that structured taskflow result, ask them to submit through taskflow and keep the entry active. Only after the terminal result exists may you update meta.json and remove the entry from `active_tasks`:
   ```bash
   bash /opt/agentteams/agent/skills/task-management/scripts/manage-state.sh --action complete --task-id {task-id}
   ```

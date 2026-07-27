@@ -146,16 +146,25 @@ class FileSystemTaskStore:
         path = self._task_dir(task_id) / "meta.json"
         data = _read_json(path)
         return TaskMeta(
-            task_id=str(data["task_id"]),
-            project_id=str(data["project_id"]),
-            task_title=str(data["task_title"]),
-            assigned_to=str(data["assigned_to"]),
-            room_id=data.get("room_id"),
+            task_id=str(
+                data.get("task_id") or data.get("taskId") or data.get("id") or task_id,
+            ),
+            project_id=str(
+                data.get("project_id") or data.get("projectId") or "standalone",
+            ),
+            task_title=str(
+                data.get("task_title")
+                or data.get("taskTitle")
+                or data.get("title")
+                or task_id
+            ),
+            assigned_to=str(data.get("assigned_to") or data["assignedTo"]),
+            room_id=data.get("room_id") or data.get("roomId"),
             status=str(data.get("status") or "assigned"),
-            depends_on=list(data.get("depends_on") or []),
-            assigned_at=data.get("assigned_at"),
-            acknowledged_at=data.get("acknowledged_at"),
-            submitted_at=data.get("submitted_at"),
+            depends_on=list(data.get("depends_on") or data.get("dependsOn") or []),
+            assigned_at=data.get("assigned_at") or data.get("assignedAt"),
+            acknowledged_at=data.get("acknowledged_at") or data.get("acknowledgedAt"),
+            submitted_at=data.get("submitted_at") or data.get("submittedAt"),
         )
 
     def write_task_meta(self, meta: TaskMeta) -> None:
@@ -595,6 +604,8 @@ def _require_assigned_worker(meta: TaskMeta, actor: str | None) -> None:
 
 
 def _require_task_room(meta: TaskMeta) -> None:
+    if meta.project_id == "standalone":
+        return
     if not (meta.room_id or "").strip():
         raise TaskflowError(f"task {meta.task_id} is missing room_id")
 

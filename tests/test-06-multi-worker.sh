@@ -1,6 +1,6 @@
 #!/bin/bash
 # test-06-multi-worker.sh - Case 6: Create Bob, assign collaborative task
-# Verifies: Second Worker creation, both Workers collaborate via shared MinIO files
+# Verifies: Second Worker creation, sequential Worker handoff via shared MinIO files
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/test-helpers.sh"
@@ -59,6 +59,7 @@ TEST_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-openclaw}"
 #
 # The runtime is explicit because the CI matrix runtime is the source of truth;
 # rendered Manager workspace text may contain fallback defaults.
+MANAGER_BASELINE_EVENT=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager")
 matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" \
     "Please create a new Worker now using these exact values — do not ask me to confirm any of them:
 - name: bob
@@ -122,100 +123,131 @@ assert_eq "0" "${BOB_EXISTS}" "Worker Bob SOUL.md exists in MinIO"
 log_section "Assign Collaborative Task"
 
 COLLAB_ID="multi-worker-$(date +%s)-$$"
-COLLAB_DIR="shared/tasks/${COLLAB_ID}/workspace"
-ALICE_FILE="${COLLAB_DIR}/alice.txt"
-BOB_FILE="${COLLAB_DIR}/bob.txt"
+ALICE_TASK_ID="${COLLAB_ID}-alice"
+BOB_TASK_ID="${COLLAB_ID}-bob"
+ALICE_FILE="shared/tasks/${ALICE_TASK_ID}/workspace/alice.txt"
+BOB_FILE="shared/tasks/${BOB_TASK_ID}/workspace/bob.txt"
 ALICE_MARKER="ALICE_READY_${COLLAB_ID}"
 BOB_MARKER="BOB_VERIFIED_${COLLAB_ID}"
 
 _cleanup_collaboration_artifacts() {
     exec_in_manager mc rm -r --force \
         "$(minio_storage_prefix)/shared/tasks/${COLLAB_ID}/" >/dev/null 2>&1 || true
+    exec_in_manager mc rm -r --force \
+        "$(minio_storage_prefix)/shared/tasks/${ALICE_TASK_ID}/" >/dev/null 2>&1 || true
+    exec_in_manager mc rm -r --force \
+        "$(minio_storage_prefix)/shared/tasks/${BOB_TASK_ID}/" >/dev/null 2>&1 || true
 }
 trap _cleanup_collaboration_artifacts EXIT
 
-MANAGER_BASELINE_EVENT=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager")
+_wait_for_file_with_nudge() {
+    local path="$1"
+    local timeout="$2"
+    local nudge_after="$3"
+    local nudge_message="$4"
+    local elapsed=0
+    local nudged=false
+
+    while [ "${elapsed}" -lt "${timeout}" ]; do
+        minio_file_exists "${path}" && return 0
+        if [ "${nudged}" = "false" ] && [ "${elapsed}" -ge "${nudge_after}" ]; then
+            matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" "${nudge_message}" >/dev/null
+            nudged=true
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+    return 1
+}
+
+if ! matrix_wait_for_sender_quiet "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager" 15 120; then
+    log_fail "Manager DM did not become quiet before collaboration request"
+    test_teardown "06-multi-worker"
+    test_summary
+    exit 1
+fi
+
 matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" \
-    "Create a Project Room named Project: ${COLLAB_ID} and coordinate Alice and Bob on this bounded shared-file handoff:
-1. Alice must write exactly '${ALICE_MARKER}' to '${ALICE_FILE}'.
-2. Only after reading Alice's file, Bob must write both '${ALICE_MARKER}' and '${BOB_MARKER}' to '${BOB_FILE}'.
-3. Verify both files, then post exactly 'COLLAB_COMPLETE ${COLLAB_ID}' in the Project Room.
+    "Assign Alice one finite task now using her existing Worker Room. Do not create a Project Room and do not notify Bob yet.
 
-Do not build an application or add extra deliverables. Start immediately."
+- exact task ID: ${ALICE_TASK_ID}
+- exact output path: ${ALICE_FILE}
+- exact file content: ${ALICE_MARKER}
+- completion: submit SUCCESS via taskflow
 
-log_section "Wait for Task Completion"
-
-log_info "Waiting for Manager token (timeout: 60s)..."
-MANAGER_TOKEN=""
-DEADLINE=$(( $(date +%s) + 60 ))
-while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
-    MANAGER_TOKEN=$(docker exec "${TEST_AGENT_CONTAINER}" \
-        jq -r '.channels.matrix.accessToken // empty' /root/manager-workspace/openclaw.json 2>/dev/null || true)
-    [ -n "${MANAGER_TOKEN}" ] && break
-    sleep 5
-done
-if [ -z "${MANAGER_TOKEN}" ]; then
-    log_fail "Manager Matrix token was not available within 60s"
-    test_teardown "06-multi-worker"
-    test_summary
-    exit 1
-fi
-
-log_info "Waiting for ${COLLAB_ID} project room (timeout: 180s)..."
-PROJECT_ROOM=""
-DEADLINE=$(( $(date +%s) + 180 ))
-while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
-    PROJECT_ROOM=$(matrix_find_room_by_name "${MANAGER_TOKEN}" "${COLLAB_ID}" 2>/dev/null || true)
-    [ -n "${PROJECT_ROOM}" ] && break
-    sleep 5
-done
-if [ -z "${PROJECT_ROOM}" ]; then
-    dump_manager_dm_messages "${ADMIN_TOKEN}" "${DM_ROOM}" "${COLLAB_ID} project room missing"
-    log_fail "Project room for ${COLLAB_ID} was not created within 180s"
-    test_teardown "06-multi-worker"
-    test_summary
-    exit 1
-fi
-log_pass "Manager created the correlated project room"
-
-log_info "Waiting for bounded collaboration completion (timeout: 180s, nudge after 30s)..."
-COMPLETION_MSG=$(matrix_read_messages "${MANAGER_TOKEN}" "${PROJECT_ROOM}" 30 2>/dev/null | \
-    jq -r --arg marker "COLLAB_COMPLETE ${COLLAB_ID}" \
-    '[.chunk[] | select(.sender | startswith("@manager")) | .content.body | select(contains($marker))] | first // empty' \
-    2>/dev/null || true)
-if [ -z "${COMPLETION_MSG}" ]; then
-    COMPLETION_MSG=$(matrix_wait_for_message_containing "${MANAGER_TOKEN}" "${PROJECT_ROOM}" "@manager" \
-        "COLLAB_COMPLETE ${COLLAB_ID}" 180 \
-        "${ADMIN_TOKEN}" "${DM_ROOM}" \
-        "Continue ${COLLAB_ID} now: if Alice's file exists, explicitly @mention Bob in the Project Room with his exact Phase 2 task; once Bob's file exists, verify both files and post the required completion marker." \
-        30 2>/dev/null || true)
-fi
-if [ -n "${COMPLETION_MSG}" ]; then
-    log_pass "Manager posted the correlated completion marker"
-else
-    log_info "Recent project-room messages:"
-    matrix_read_messages "${MANAGER_TOKEN}" "${PROJECT_ROOM}" 30 2>/dev/null || true
-    log_fail "Manager did not post COLLAB_COMPLETE ${COLLAB_ID} within 180s"
-fi
+Copy these identifiers and strings verbatim into Alice's task spec. Do not add deliverables or ask for confirmation."
 
 log_section "Verify Shared Coordination"
 
-if minio_wait_for_file "${ALICE_FILE}" 60; then
+log_info "Waiting for Alice handoff file (timeout: 150s, one nudge after 60s)..."
+if _wait_for_file_with_nudge "${ALICE_FILE}" 150 60 \
+    "Continue ${COLLAB_ID} Phase 1 now through Alice's existing Worker Room. Preserve task ID '${ALICE_TASK_ID}', path '${ALICE_FILE}', and marker '${ALICE_MARKER}' verbatim."; then
     ALICE_CONTENT=$(minio_read_file "${ALICE_FILE}")
     assert_contains "${ALICE_CONTENT}" "${ALICE_MARKER}" \
         "Alice wrote the correlated handoff marker"
 else
+    dump_manager_dm_messages "${ADMIN_TOKEN}" "${DM_ROOM}" "${COLLAB_ID} Alice output missing"
     log_fail "Alice handoff file was not created: ${ALICE_FILE}"
+    test_teardown "06-multi-worker"
+    test_summary
+    exit 1
 fi
 
-if minio_wait_for_file "${BOB_FILE}" 60; then
+matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" \
+    "Alice's ${ALICE_TASK_ID} output now exists in MinIO. Assign Bob one finite task now using his existing Worker Room. Do not create a Project Room.
+
+- exact task ID: ${BOB_TASK_ID}
+- first read: ${ALICE_FILE}
+- verify it contains: ${ALICE_MARKER}
+- exact output path: ${BOB_FILE}
+- exact output content, two lines:
+${ALICE_MARKER}
+${BOB_MARKER}
+- completion: submit SUCCESS via taskflow
+
+Copy these identifiers, paths, and strings verbatim into Bob's task spec. Do not add deliverables or ask for confirmation." \
+    >/dev/null
+
+log_info "Waiting for Bob verification file (timeout: 150s, one nudge after 60s)..."
+if _wait_for_file_with_nudge "${BOB_FILE}" 150 60 \
+    "Continue ${COLLAB_ID} Phase 2 now through Bob's existing Worker Room. Preserve task ID '${BOB_TASK_ID}', both paths, and both markers verbatim."; then
     BOB_CONTENT=$(minio_read_file "${BOB_FILE}")
     assert_contains "${BOB_CONTENT}" "${ALICE_MARKER}" \
         "Bob read Alice's handoff marker"
     assert_contains "${BOB_CONTENT}" "${BOB_MARKER}" \
         "Bob wrote the correlated verification marker"
 else
+    dump_manager_dm_messages "${ADMIN_TOKEN}" "${DM_ROOM}" "${COLLAB_ID} Bob output missing"
     log_fail "Bob verification file was not created: ${BOB_FILE}"
+    test_teardown "06-multi-worker"
+    test_summary
+    exit 1
+fi
+
+COMPLETION_MARKER="COLLAB_COMPLETE ${COLLAB_ID}"
+MANAGER_BASELINE_EVENT=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager")
+matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" \
+    "Both ${COLLAB_ID} files now exist. Verify them, then reply with exactly '${COMPLETION_MARKER}' as a standalone message and nothing else." \
+    >/dev/null
+COMPLETION_MSG=""
+DEADLINE=$(( $(date +%s) + 60 ))
+while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
+    COMPLETION_MSG=$(matrix_read_messages "${ADMIN_TOKEN}" "${DM_ROOM}" 30 2>/dev/null | \
+        jq -r --arg user "@manager" --arg baseline "${MANAGER_BASELINE_EVENT}" \
+          --arg marker "${COMPLETION_MARKER}" \
+        '[.chunk[] | select(.sender | startswith($user)) |
+          select(.event_id != $baseline) |
+          select((.content.body // "" |
+            gsub("^\\s+|\\s+$"; "") |
+            sub("^\\*\\s+"; "")) == $marker) |
+          .content.body] | first // empty' 2>/dev/null || true)
+    [ -n "${COMPLETION_MSG}" ] && break
+    sleep 5
+done
+if [ -n "${COMPLETION_MSG}" ]; then
+    log_pass "Manager posted the exact correlated completion marker"
+else
+    log_fail "Manager did not post exact marker: ${COMPLETION_MARKER}"
 fi
 
 log_section "Collect Metrics"

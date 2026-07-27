@@ -422,6 +422,23 @@ func TestReconcileTeamTeamReferences_HappyPath(t *testing.T) {
 	if workerCoord.TeamLeaderName != "lead" {
 		t.Errorf("workerCoord TeamLeaderName=%q, want lead", workerCoord.TeamLeaderName)
 	}
+
+	// Referenced Workers are provisioned before the Team exists. Team
+	// reconciliation must expand their storage policy to include Team shared
+	// storage once the Team name is known.
+	if len(prov.Calls.RefreshWorkerCredentials) != 2 {
+		t.Fatalf("RefreshWorkerCredentials calls=%d, want 2", len(prov.Calls.RefreshWorkerCredentials))
+	}
+	gotCredentialRefreshes := map[string]string{}
+	for _, call := range prov.Calls.RefreshWorkerCredentials {
+		gotCredentialRefreshes[call.CredentialName] = call.TeamName
+	}
+	if gotCredentialRefreshes["lead"] != "team-a" {
+		t.Errorf("leader TeamName=%q, want team-a", gotCredentialRefreshes["lead"])
+	}
+	if gotCredentialRefreshes["dev"] != "team-a" {
+		t.Errorf("worker TeamName=%q, want team-a", gotCredentialRefreshes["dev"])
+	}
 }
 
 func TestReconcileTeamTeamReferences_QwenPawProjectsRuntimeRoster(t *testing.T) {

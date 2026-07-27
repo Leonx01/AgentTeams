@@ -153,7 +153,7 @@ Create a shared project room named EXACTLY '${PROJECT_NAME}' with alice, bob, ch
 
 The integration coordinator will send the phase instructions in that room after verifying membership. Do not create task specs, clone the repository, or assign phases yourself. Stay in the room and observe the reports. After charlie reports PHASE4_DONE, post exactly 'GIT_COLLAB_COMPLETE ${TEST_RUN_ID}' and @mention the human admin."
 
-PHASE1_MESSAGE="@alice Phase 1 for collaboration ${TEST_RUN_ID}. Use these instructions directly; do not wait for file sync.
+PHASE1_MESSAGE="Phase 1 for collaboration ${TEST_RUN_ID}. Use these instructions directly; do not wait for file sync.
 - Clone ${GIT_REPO_URL}
 - Create branch '${FEATURE_BRANCH}' from main
 - Create doc/proposal.md with exactly:
@@ -167,7 +167,7 @@ PHASE1_MESSAGE="@alice Phase 1 for collaboration ${TEST_RUN_ID}. Use these instr
   - Better quality
 - Commit 'feat: add proposal', push '${FEATURE_BRANCH}', and report PHASE1_DONE."
 
-PHASE2_MESSAGE="@bob Phase 2 for collaboration ${TEST_RUN_ID}. Alice's branch is ready. Use these instructions directly; do not wait for file sync.
+PHASE2_MESSAGE="Phase 2 for collaboration ${TEST_RUN_ID}. Alice's branch is ready. Use these instructions directly; do not wait for file sync.
 - Clone ${GIT_REPO_URL} and check out '${FEATURE_BRANCH}'
 - Create '${REVIEW_BRANCH}' from '${FEATURE_BRANCH}'
 - Create reviews/proposal-review.md with exactly:
@@ -176,16 +176,21 @@ PHASE2_MESSAGE="@bob Phase 2 for collaboration ${TEST_RUN_ID}. Alice's branch is
   The proposal looks good. Please add a ## Summary section at the top that briefly describes the project in one sentence.
 - Commit 'review: request summary section', push '${REVIEW_BRANCH}', and report REVISION_NEEDED."
 
-PHASE3_MESSAGE="@alice Phase 3 for collaboration ${TEST_RUN_ID}. Bob's review branch is ready. Use these instructions directly; do not wait for file sync.
+PHASE3_MESSAGE="Phase 3 for collaboration ${TEST_RUN_ID}. Bob's review branch is ready. Use these instructions directly; do not wait for file sync.
 - Work on '${FEATURE_BRANCH}'
 - Read reviews/proposal-review.md from '${REVIEW_BRANCH}'
 - Add a '## Summary' section immediately after the '# Project Proposal' title in doc/proposal.md, with one sentence describing the project
 - Commit 'fix: add summary section per review', push '${FEATURE_BRANCH}', and report PHASE3_DONE."
 
-PHASE4_MESSAGE="@charlie Phase 4 for collaboration ${TEST_RUN_ID}. Alice's revision is ready. Use these instructions directly; do not wait for file sync.
+PHASE4_MESSAGE="Phase 4 for collaboration ${TEST_RUN_ID}. Alice's revision is ready. Use these instructions directly; do not wait for file sync.
 - Clone ${GIT_REPO_URL}
 - Create '${TEST_BRANCH}' from '${FEATURE_BRANCH}'
-- Create verify/checklist.md confirming the Summary section, Goals section, and addressed review
+- Create verify/checklist.md with exactly:
+  # Verification
+
+  - [x] Summary section exists
+  - [x] Goals section exists
+  - [x] Review request addressed
 - Commit 'verify: proposal review checklist', push '${TEST_BRANCH}', and report PHASE4_DONE."
 
 # Snapshot before first LLM interaction
@@ -264,10 +269,12 @@ fi
 
 PROJECT_BASELINE_EVENT=$(matrix_latest_reply_event "${MANAGER_TOKEN}" "${PROJECT_ROOM}" "@manager")
 
-matrix_send_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" "${PHASE1_MESSAGE}" >/dev/null
+matrix_send_mention_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" \
+    "@alice:${TEST_MATRIX_DOMAIN}" "${PHASE1_MESSAGE}" >/dev/null
 PHASE2_SENT=0
 PHASE3_SENT=0
 PHASE4_SENT=0
+PHASE3_BASE_SHA=""
 
 log_info "Waiting for collaboration milestones (overall timeout: 300s, no-activity timeout: 90s)..."
 DEADLINE=$(( $(date +%s) + 300 ))
@@ -291,19 +298,24 @@ while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
     STATE="${FEATURE_SHA}:${REVIEW_SHA}:${FEATURE_COMMITS}:${TEST_SHA}:${PROJECT_ACTIVITY}"
 
     if [ -n "${FEATURE_SHA}" ] && [ "${PHASE2_SENT}" -eq 0 ]; then
-        matrix_send_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" "${PHASE2_MESSAGE}" >/dev/null
+        matrix_send_mention_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" \
+            "@bob:${TEST_MATRIX_DOMAIN}" "${PHASE2_MESSAGE}" >/dev/null
         PHASE2_SENT=1
     fi
     if [ -n "${REVIEW_SHA}" ] && [ "${PHASE3_SENT}" -eq 0 ]; then
-        matrix_send_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" "${PHASE3_MESSAGE}" >/dev/null
+        PHASE3_BASE_SHA="${FEATURE_SHA}"
+        matrix_send_mention_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" \
+            "@alice:${TEST_MATRIX_DOMAIN}" "${PHASE3_MESSAGE}" >/dev/null
         PHASE3_SENT=1
     fi
-    if [ "${FEATURE_COMMITS}" -ge 2 ] && [ "${PHASE4_SENT}" -eq 0 ]; then
-        matrix_send_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" "${PHASE4_MESSAGE}" >/dev/null
+    if [ "${PHASE3_SENT}" -eq 1 ] && [ "${PHASE4_SENT}" -eq 0 ] &&
+        [ -n "${FEATURE_SHA}" ] && [ "${FEATURE_SHA}" != "${PHASE3_BASE_SHA}" ]; then
+        matrix_send_mention_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" \
+            "@charlie:${TEST_MATRIX_DOMAIN}" "${PHASE4_MESSAGE}" >/dev/null
         PHASE4_SENT=1
     fi
 
-    if [ -n "${TEST_SHA}" ] && [ "${FEATURE_COMMITS}" -ge 2 ]; then
+    if [ -n "${TEST_SHA}" ] && [ "${PHASE4_SENT}" -eq 1 ]; then
         break
     fi
 

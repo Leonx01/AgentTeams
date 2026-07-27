@@ -321,6 +321,7 @@ matrix_wait_for_reply_matching_since() {
     local nudge_room="${8:-}"
     local nudge_message="${9:-}"
     local nudge_interval="${10:-600}"
+    local required_mention="${11:-}"
     local elapsed=0
 
     # Track which non-matching new replies we've already logged, to avoid
@@ -344,11 +345,18 @@ matrix_wait_for_reply_matching_since() {
         # by walking messages until we hit the baseline event_id. matrix_read_messages
         # returns newest-first (dir=b), so we reverse the chunk for chronological order.
         local new_replies
-        new_replies=$(echo "${messages}" | jq -r --arg user "${from_user}" --arg baseline "${baseline_event}" '
+        new_replies=$(echo "${messages}" | jq -r \
+            --arg user "${from_user}" \
+            --arg baseline "${baseline_event}" \
+            --arg mention "${required_mention}" '
             [ .chunk[]
               | select(.sender | startswith($user))
               | select(.type == "m.room.message")
               | select(.content.body != null)
+              | select(
+                  $mention == ""
+                  or ((.content["m.mentions"].user_ids // []) | index($mention) != null)
+                )
             ] as $msgs
             | ($msgs | map(.event_id) | index($baseline)) as $idx
             | (if $idx == null then $msgs else $msgs[0:$idx] end) | reverse
@@ -376,6 +384,23 @@ matrix_wait_for_reply_matching_since() {
     done
 
     return 1
+}
+
+# Wait for a correlated reply that also carries Matrix mention metadata for the
+# expected user. This prevents a visible but mistargeted @mention from being
+# mistaken for successful delivery.
+matrix_wait_for_mentioned_reply_matching_since() {
+    local token="$1"
+    local room_id="$2"
+    local from_user="$3"
+    local baseline_event="$4"
+    local pattern="$5"
+    local mentioned_user="$6"
+    local timeout="${7:-180}"
+
+    matrix_wait_for_reply_matching_since \
+        "${token}" "${room_id}" "${from_user}" "${baseline_event}" \
+        "${pattern}" "${timeout}" "" "" "" 600 "${mentioned_user}"
 }
 
 # Send a mention message to a worker and wait for its reply, with at-least-once
@@ -482,13 +507,17 @@ matrix_wait_for_message_containing() {
     local nudge_room="${7:-}"
     local nudge_message="${8:-}"
     local nudge_interval="${9:-600}"
+    local baseline_event="${10-}"
     local elapsed=0
 
-    # Snapshot the latest known event_id to avoid returning stale messages
-    local baseline_event
-    baseline_event=$(matrix_read_messages "${token}" "${room_id}" 5 2>/dev/null | \
-        jq -r --arg user "${from_user}" \
-        '[.chunk[] | select(.sender | startswith($user)) | .event_id] | first // ""' 2>/dev/null)
+    # Callers that send a request before entering this function can capture and
+    # pass the baseline as argument 10. That closes the race where a fast reply
+    # arrives between the send and this function's first history snapshot.
+    if [ "$#" -lt 10 ]; then
+        baseline_event=$(matrix_read_messages "${token}" "${room_id}" 5 2>/dev/null | \
+            jq -r --arg user "${from_user}" \
+            '[.chunk[] | select(.sender | startswith($user)) | .event_id] | first // ""' 2>/dev/null)
+    fi
 
     while [ "${elapsed}" -lt "${timeout}" ]; do
         sleep 15

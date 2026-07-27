@@ -80,16 +80,45 @@ log_pass "SOUL.md files prepared for all team members"
 # ============================================================
 log_section "Create Team"
 
+# Stage the referenced Worker CRs without starting their runtimes. Otherwise a
+# fast standalone reconcile can launch the Leader before TeamReconciler has
+# overlaid the Team Leader prompt, and CoPaw keeps that startup prompt for the
+# whole process lifetime.
+exec_in_agent bash -c "cat > /tmp/agentteams-test-${TEST_TEAM}-workers.yaml << 'YAMLEOF'
+apiVersion: agentteams.io/v1beta1
+kind: Worker
+metadata:
+  name: ${TEST_LEADER}
+spec:
+  runtime: ${TEST_WORKER_RUNTIME}
+  state: Stopped
+---
+apiVersion: agentteams.io/v1beta1
+kind: Worker
+metadata:
+  name: ${TEST_W1}
+spec:
+  runtime: ${TEST_WORKER_RUNTIME}
+  state: Stopped
+---
+apiVersion: agentteams.io/v1beta1
+kind: Worker
+metadata:
+  name: ${TEST_W2}
+spec:
+  runtime: ${TEST_WORKER_RUNTIME}
+  state: Stopped
+YAMLEOF
+" 2>/dev/null
+
+CREATE_WORKERS_OUTPUT=$(exec_in_agent agt apply -f "/tmp/agentteams-test-${TEST_TEAM}-workers.yaml" 2>&1)
+if echo "${CREATE_WORKERS_OUTPUT}" | grep -q "created\\|configured"; then
+    log_pass "Stopped Worker CRs created"
+else
+    log_fail "Worker CR creation failed: ${CREATE_WORKERS_OUTPUT}"
+fi
 for w in "${TEST_LEADER}" "${TEST_W1}" "${TEST_W2}"; do
-    CREATE_WORKER_OUTPUT=$(exec_in_agent agt create worker \
-        --name "${w}" \
-        --runtime "${TEST_WORKER_RUNTIME}" \
-        --no-wait 2>&1)
-    if echo "${CREATE_WORKER_OUTPUT}" | grep -q "worker/${w} create accepted"; then
-        log_pass "Worker ${w} creation accepted"
-    else
-        log_fail "Worker ${w} creation failed: ${CREATE_WORKER_OUTPUT}"
-    fi
+    wait_worker_provisioned "${w}" 120 || log_fail "Worker ${w} was not provisioned while stopped"
 done
 
 CREATE_OUTPUT=$(exec_in_agent agt create team \
@@ -239,11 +268,24 @@ LEADER_HOME="/root/agentteams-fs/agents/${TEST_LEADER}"
 # Read the canonical assertions only after the newest communication rules land.
 wait_agent_file_contains "${TEST_LEADER}" "skills/communication/SKILL.md" \
     "An assignment intent sentence is not an assignment" 30 || true
+wait_agent_file_contains "${TEST_LEADER}" "AGENTS.md" \
+    "Project/tool boundary" 30 || true
 PROJECT_SKILL=$(exec_in_manager mc cat "${STORAGE_PREFIX}/agents/${TEST_LEADER}/skills/project-management/SKILL.md" 2>/dev/null)
 TASK_SKILL=$(exec_in_manager mc cat "${STORAGE_PREFIX}/agents/${TEST_LEADER}/skills/task-management/SKILL.md" 2>/dev/null)
 COMMUNICATION_SKILL=$(exec_in_manager mc cat "${STORAGE_PREFIX}/agents/${TEST_LEADER}/skills/communication/SKILL.md" 2>/dev/null)
 COORDINATION_SKILL=$(exec_in_manager mc cat "${STORAGE_PREFIX}/agents/${TEST_LEADER}/skills/team-coordination/SKILL.md" 2>/dev/null)
 LEADER_AGENTS=$(exec_in_manager mc cat "${STORAGE_PREFIX}/agents/${TEST_LEADER}/AGENTS.md" 2>/dev/null)
+
+# Start each runtime only after the Team Leader assets are visible in storage,
+# so the initial CoPaw system prompt is deterministic.
+for w in "${TEST_LEADER}" "${TEST_W1}" "${TEST_W2}"; do
+    START_OUTPUT=$(exec_in_agent agt update worker --name "${w}" --state Running 2>&1)
+    if echo "${START_OUTPUT}" | grep -q "updated\\|configured"; then
+        log_pass "Worker ${w} start accepted"
+    else
+        log_fail "Worker ${w} start failed: ${START_OUTPUT}"
+    fi
+done
 
 assert_contains "${PROJECT_SKILL}" "projectflow" "project-management documents projectflow"
 assert_contains "${PROJECT_SKILL}" "Project state is tool-owned" "project-management forbids manual project state mutation"
@@ -370,6 +412,9 @@ LEADER_RESPONDED=false
 TEAM_COORDINATED=false
 RUNTIME_ERROR=false
 CORRECTION_SENT=false
+LAST_DM_ACTIVITY=""
+DM_QUIET_POLLS=0
+MAX_DM_QUIET_POLLS="${MAX_DM_QUIET_POLLS:-3}"
 for i in $(seq 1 "${MAX_COORDINATION_POLLS}"); do
     sleep "${COORDINATION_POLL_SECONDS}"
     log_info "Polling rooms... (${i}/${MAX_COORDINATION_POLLS}, elapsed: $((i*COORDINATION_POLL_SECONDS))s)"
@@ -401,16 +446,34 @@ for i in $(seq 1 "${MAX_COORDINATION_POLLS}"); do
         TOKEN=$(curl -sf -X POST "http://127.0.0.1:6167/_matrix/client/v3/login" \
             -H "Content-Type: application/json" \
             -d "{\"type\":\"m.login.password\",\"identifier\":{\"type\":\"m.id.user\",\"user\":\"admin\"},\"password\":\"'"${TEST_ADMIN_PASSWORD}"'\"}" | jq -r ".access_token")
-        curl -sf "http://127.0.0.1:6167/_matrix/client/v3/rooms/'"${LEADER_DM_ENC}"'/messages?dir=b&limit=5" \
-            -H "Authorization: Bearer ${TOKEN}" | jq -r ".chunk[] | select(.type == \"m.room.message\" and (.sender | contains(\"'"${TEST_LEADER}"'\"))) | .content.body[0:200]"
+        curl -sf "http://127.0.0.1:6167/_matrix/client/v3/rooms/'"${LEADER_DM_ENC}"'/messages?dir=b&limit=10" \
+            -H "Authorization: Bearer ${TOKEN}" | jq -r ".chunk[] | select(.type == \"m.room.message\" and (.sender | contains(\"'"${TEST_LEADER}"'\"))) | \"\(.event_id)\t\(.content.body[0:200])\""
     ' 2>/dev/null)
 
-    if [ -n "${DM_MSGS}" ]; then
-        log_info "Leader responded in Leader DM"
+    # CoPaw streams tool calls/results into Matrix while the agent is still
+    # working. Those traces are progress, not a completed DM reply, so they
+    # must not trigger the wrong-room fast-fail path. Wait for three quiet
+    # polls after all Leader DM activity stops before treating a natural
+    # language message as the completed wrong-room reply.
+    DM_ACTIVITY=$(printf '%s\n' "${DM_MSGS}" | cut -f1)
+    DM_ACTIONABLE_MSGS=$(printf '%s\n' "${DM_MSGS}" | cut -f2- \
+        | grep -vE '^(🔧|✅|❌|🛠)' || true)
+    if echo "${DM_ACTIONABLE_MSGS}" | grep -qi "Error:\\|No active model configured"; then
+        RUNTIME_ERROR=true
+        break
+    fi
+
+    if [ -n "${DM_ACTIVITY}" ] && [ "${DM_ACTIVITY}" = "${LAST_DM_ACTIVITY}" ]; then
+        DM_QUIET_POLLS=$((DM_QUIET_POLLS + 1))
+    else
+        LAST_DM_ACTIVITY="${DM_ACTIVITY}"
+        DM_QUIET_POLLS=0
+    fi
+
+    if [ -n "${DM_ACTIONABLE_MSGS}" ] \
+        && [ "${DM_QUIET_POLLS}" -ge "${MAX_DM_QUIET_POLLS}" ]; then
+        log_info "Leader completed a reply in Leader DM"
         LEADER_RESPONDED=true
-        if echo "${DM_MSGS}" | grep -qi "Error:\\|No active model configured"; then
-            RUNTIME_ERROR=true
-        fi
     fi
 
     if [ "${LEADER_RESPONDED}" = "true" ] && [ "${TEAM_COORDINATED}" != "true" ]; then
@@ -421,6 +484,8 @@ for i in $(seq 1 "${MAX_COORDINATION_POLLS}"); do
                 >/dev/null
             CORRECTION_SENT=true
             LEADER_RESPONDED=false
+            LAST_DM_ACTIVITY=""
+            DM_QUIET_POLLS=0
         else
             log_info "Leader is replying in Leader DM but has not posted a Team Room assignment; failing fast"
             break

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -17,6 +18,7 @@ import (
 type MinIOAdminClient struct {
 	config     Config
 	aliasReady bool
+	adminMu    sync.Mutex
 }
 
 // NewMinIOAdminClient creates a StorageAdminClient for managing MinIO users.
@@ -45,6 +47,9 @@ func (c *MinIOAdminClient) ensureAlias(ctx context.Context) error {
 }
 
 func (c *MinIOAdminClient) EnsureUser(ctx context.Context, username, password string) error {
+	c.adminMu.Lock()
+	defer c.adminMu.Unlock()
+
 	if err := c.ensureAlias(ctx); err != nil {
 		return err
 	}
@@ -60,6 +65,9 @@ func (c *MinIOAdminClient) EnsureUser(ctx context.Context, username, password st
 }
 
 func (c *MinIOAdminClient) EnsurePolicy(ctx context.Context, req PolicyRequest) error {
+	c.adminMu.Lock()
+	defer c.adminMu.Unlock()
+
 	if err := c.ensureAlias(ctx); err != nil {
 		return err
 	}
@@ -97,14 +105,8 @@ func (c *MinIOAdminClient) EnsurePolicy(ctx context.Context, req PolicyRequest) 
 	}
 	policyFile.Close()
 
-	// Detach before remove so a worker keeps the freshly generated policy
-	// after bucket/prefix rename changes instead of an older attached policy.
-	if _, err := c.runMCAdmin(ctx, "policy", "detach", c.config.Alias, policyName, "--user", req.WorkerName); err != nil {
-		logger.Info("MinIO worker policy detach skipped", "worker", req.WorkerName, "policy", policyName, "error", err.Error())
-	}
-	if _, err := c.runMCAdmin(ctx, "policy", "remove", c.config.Alias, policyName); err != nil {
-		logger.Info("MinIO worker policy remove skipped", "worker", req.WorkerName, "policy", policyName, "error", err.Error())
-	}
+	// MinIO updates an existing named policy in place. Avoid detach/remove here:
+	// either operation creates an authorization gap while a Worker is starting.
 	if _, err := c.runMCAdmin(ctx, "policy", "create", c.config.Alias, policyName, policyFile.Name()); err != nil {
 		return fmt.Errorf("create policy %s: %w", policyName, err)
 	}
@@ -139,6 +141,9 @@ func policyObjectResources(policy s3Policy) []string {
 }
 
 func (c *MinIOAdminClient) DeleteUser(ctx context.Context, username string) error {
+	c.adminMu.Lock()
+	defer c.adminMu.Unlock()
+
 	if err := c.ensureAlias(ctx); err != nil {
 		return err
 	}
@@ -221,30 +226,51 @@ func (c *MinIOAdminClient) buildWorkerPolicy(workerName, bucket, teamName string
 		)
 	}
 
-	return s3Policy{
-		Version: "2012-10-17",
-		Statement: []s3PolicyStatement{
-			{
-				Effect:   "Allow",
-				Action:   []string{"s3:GetBucketLocation"},
-				Resource: []string{fmt.Sprintf("arn:aws:s3:::%s", bucket)},
-			},
-			{
-				Effect:   "Allow",
-				Action:   []string{"s3:ListBucket"},
-				Resource: []string{fmt.Sprintf("arn:aws:s3:::%s", bucket)},
-				Condition: map[string]interface{}{
-					"StringLike": map[string]interface{}{
-						"s3:prefix": listPrefixes,
-					},
+	if !isManager {
+		listPrefixes = append(listPrefixes,
+			"agentteams-config",
+			"agentteams-config/",
+			"agentteams-config/packages",
+			"agentteams-config/packages/",
+			"agentteams-config/packages/*",
+		)
+	}
+
+	statements := []s3PolicyStatement{
+		{
+			Effect:   "Allow",
+			Action:   []string{"s3:GetBucketLocation"},
+			Resource: []string{fmt.Sprintf("arn:aws:s3:::%s", bucket)},
+		},
+		{
+			Effect:   "Allow",
+			Action:   []string{"s3:ListBucket"},
+			Resource: []string{fmt.Sprintf("arn:aws:s3:::%s", bucket)},
+			Condition: map[string]interface{}{
+				"StringLike": map[string]interface{}{
+					"s3:prefix": listPrefixes,
 				},
 			},
-			{
-				Effect:   "Allow",
-				Action:   []string{"s3:GetObject", "s3:PutObject", "s3:DeleteObject"},
-				Resource: rwResources,
-			},
 		},
+		{
+			Effect:   "Allow",
+			Action:   []string{"s3:GetObject", "s3:PutObject", "s3:DeleteObject"},
+			Resource: rwResources,
+		},
+	}
+	if !isManager {
+		statements = append(statements, s3PolicyStatement{
+			Effect: "Allow",
+			Action: []string{"s3:GetObject"},
+			Resource: []string{
+				fmt.Sprintf("arn:aws:s3:::%s/agentteams-config/packages/*", bucket),
+			},
+		})
+	}
+
+	return s3Policy{
+		Version:   "2012-10-17",
+		Statement: statements,
 	}
 }
 

@@ -24,6 +24,11 @@ def _sync(tmp_path):
     )
 
 
+def _write_openclaw_config(sync):
+    sync.local_dir.mkdir(parents=True, exist_ok=True)
+    (sync.local_dir / "openclaw.json").write_text('{"team_id":"dag-team"}')
+
+
 def test_mc_failure_redacts_alias_credentials_and_logs_stderr(monkeypatch, caplog):
     raw_secret = "raw-secret-value"
     raw_access = "raw-access-key"
@@ -94,6 +99,7 @@ def test_cat_non_missing_failure_warns(tmp_path, monkeypatch, caplog):
 def test_mirror_all_restores_worker_prefix_and_shared_without_credentials(tmp_path, monkeypatch):
     sync = _sync(tmp_path)
     commands = []
+    _write_openclaw_config(sync)
 
     monkeypatch.setattr(sync, "_ensure_alias", lambda: None)
     monkeypatch.setattr(
@@ -135,6 +141,12 @@ def test_mirror_all_falls_back_to_startup_files_when_prefix_missing(tmp_path, mo
     commands = []
 
     monkeypatch.setattr(sync, "_ensure_alias", lambda: None)
+    monkeypatch.setattr(
+        sync,
+        "_get_worker_info",
+        lambda: {"name": "dag-team-dev", "team": "dag-team", "role": "worker"},
+    )
+    monkeypatch.setattr(sync, "_get_team_id", lambda: "dag-team")
 
     def fake_mc(*args, **_kwargs):
         commands.append(args)
@@ -181,6 +193,7 @@ def test_mirror_all_falls_back_to_startup_files_when_prefix_missing(tmp_path, mo
 def test_mirror_all_restores_global_shared_for_team_leader(tmp_path, monkeypatch):
     sync = _sync(tmp_path)
     commands = []
+    _write_openclaw_config(sync)
 
     monkeypatch.setattr(sync, "_ensure_alias", lambda: None)
     monkeypatch.setattr(

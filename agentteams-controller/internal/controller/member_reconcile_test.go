@@ -93,6 +93,32 @@ func TestValidateMemberDeploymentRejectsRemote(t *testing.T) {
 	}
 }
 
+func TestReconcileMemberInfraRefreshesTeamStoragePolicy(t *testing.T) {
+	provisioner := mocks.NewMockProvisioner()
+	state := &MemberState{}
+	member := MemberContext{
+		Name:                 "worker-cr-a",
+		RuntimeName:          "worker-a",
+		TeamName:             "runtime-team-a",
+		ExistingMatrixUserID: "@worker-a:matrix.local",
+		ExistingRoomID:       "!worker-a:matrix.local",
+	}
+
+	if _, err := ReconcileMemberInfra(context.Background(), MemberDeps{
+		Provisioner: provisioner,
+	}, member, state); err != nil {
+		t.Fatalf("ReconcileMemberInfra: %v", err)
+	}
+
+	if got := len(provisioner.Calls.RefreshWorkerCredentials); got != 1 {
+		t.Fatalf("RefreshWorkerCredentials calls=%d, want 1", got)
+	}
+	call := provisioner.Calls.RefreshWorkerCredentials[0]
+	if call.CredentialName != "worker-cr-a" || call.WorkerName != "worker-a" || call.TeamName != "runtime-team-a" {
+		t.Fatalf("RefreshWorkerCredentials call=%+v, want TeamName runtime-team-a", call)
+	}
+}
+
 func TestResolveBackendForMember_NoBackendAvailable(t *testing.T) {
 	// An empty registry surfaces an error so callers can decide whether
 	// to skip container management or fail loudly.
@@ -155,6 +181,13 @@ func TestCreateMemberContainerDoesNotAddDockerHostGatewayForK8s(t *testing.T) {
 	}
 	if len(req.ExtraHosts) != 0 {
 		t.Fatalf("ExtraHosts=%v, want empty for k8s backend", req.ExtraHosts)
+	}
+}
+
+func TestScopedWorkerConfigKeyUsesRuntimeConfigForQwenPaw(t *testing.T) {
+	got := scopedWorkerConfigKey("alice", backend.RuntimeQwenPaw)
+	if want := "agents/alice/runtime/runtime.yaml"; got != want {
+		t.Fatalf("scopedWorkerConfigKey() = %q, want %q", got, want)
 	}
 }
 

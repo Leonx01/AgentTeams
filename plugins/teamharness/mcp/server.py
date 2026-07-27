@@ -3518,9 +3518,9 @@ def _normalize_role(role: str) -> str:
 
 
 def _runtime_role() -> str:
-    role = os.getenv("AGENTTEAMS_AGENT_ROLE", "").strip() or os.getenv("AGENTTEAMS_WORKER_ROLE", "").strip()
+    role = str(_section(_load_runtime_config(), "member").get("role") or "").strip()
     if not role:
-        role = str(_section(_load_runtime_config(), "member").get("role") or "").strip()
+        role = os.getenv("AGENTTEAMS_AGENT_ROLE", "").strip() or os.getenv("AGENTTEAMS_WORKER_ROLE", "").strip()
     return _normalize_role(role)
 
 

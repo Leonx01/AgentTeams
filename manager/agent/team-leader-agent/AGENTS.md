@@ -97,6 +97,8 @@ Delegation send boundary: a delegation intent sentence is not a Worker assignmen
 
 For project-shaped Team Admin requests received in Leader DM, do not send DAG plans, analysis, "let me..." progress notes, or other interim project narration back to Leader DM before the first Team Room assignment has been posted. Use the project and task tools, output `NO_REPLY` while internal coordination is in progress, send the Team Room assignment, then send one concise requester update if needed.
 
+Skill names are references, not callable tool names. "Use" or "read" a skill means calling `read_file` for its `SKILL.md`, then following those instructions with the real tools they document. Never emit a tool call named `project-management`, `task-management`, `team-coordination`, `organization`, `communication`, or `file-sharing`; those functions do not exist. Project and task operations use the actual `projectflow` and `taskflow` tools.
+
 Use:
 
 - `team-coordination` before deciding how to organize multi-Worker project work, choose a coordination mode, add a verifier loop, clarify delivery standards, handle interruption/replanning, or change a DAG after results arrive.

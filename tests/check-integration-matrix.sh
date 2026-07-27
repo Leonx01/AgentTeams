@@ -125,6 +125,11 @@ for test_file in "${TEAM_CONFIG_TEST}" "${TEAM_ADMIN_TEST}"; do
     [ "$(grep -Fc 'runtime: ${TEST_WORKER_RUNTIME}' "${test_file}")" -ge 2 ] || \
         fail "$(basename "${test_file}") must set every Team member Worker runtime explicitly"
 done
+for member_var in TEST_W1 TEST_LEADER; do
+    grep -Fq "wait_agent_file_contains \"\${${member_var}}\" \"AGENTS.md\" \"Team Admin\" 120 || true" \
+        "${TEAM_ADMIN_TEST}" || \
+        fail "$(basename "${TEAM_ADMIN_TEST}") must wait for ${member_var} Team Admin context before asserting it"
+done
 
 for test_file in \
     "${INLINE_CONFIG_TEST}" \

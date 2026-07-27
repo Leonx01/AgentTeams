@@ -240,7 +240,7 @@ def _require_ack_preconditions(meta: TaskMeta, actor: str | None) -> None:
         raise TaskflowError(
             f"task {meta.task_id} is assigned to {meta.assigned_to}, not {current}",
         )
-    if not (meta.room_id or "").strip():
+    if meta.project_id != "standalone" and not (meta.room_id or "").strip():
         raise TaskflowError(f"task {meta.task_id} is missing room_id")
 
 

@@ -1,9 +1,11 @@
 package oss
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -59,6 +61,65 @@ func TestMinIOClient_PutObjectUsesCp(t *testing.T) {
 	}
 }
 
+func TestMinIOAdminClient_EnsurePolicySerializesConcurrentUpdates(t *testing.T) {
+	dir := t.TempDir()
+	mcPath := filepath.Join(dir, "mc")
+	lockDir := filepath.Join(dir, "policy.lock")
+	overlapFile := filepath.Join(dir, "overlap")
+	script := `#!/bin/sh
+if [ "$1" = "alias" ]; then
+    exit 0
+fi
+if ! mkdir "$MC_POLICY_LOCK_DIR" 2>/dev/null; then
+    touch "$MC_POLICY_OVERLAP_FILE"
+    exit 1
+fi
+sleep 0.05
+rmdir "$MC_POLICY_LOCK_DIR"
+`
+	if err := os.WriteFile(mcPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MC_POLICY_LOCK_DIR", lockDir)
+	t.Setenv("MC_POLICY_OVERLAP_FILE", overlapFile)
+
+	c := NewMinIOAdminClient(Config{
+		MCBinary:  mcPath,
+		Endpoint:  "http://minio.test",
+		AccessKey: "admin",
+		SecretKey: "password",
+		Bucket:    "agentteams-storage",
+	})
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, teamName := range []string{"team-a", "team-b"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- c.EnsurePolicy(context.Background(), PolicyRequest{
+				WorkerName: "worker-a",
+				TeamName:   teamName,
+			})
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Errorf("EnsurePolicy failed: %v", err)
+		}
+	}
+	if _, err := os.Stat(overlapFile); err == nil {
+		t.Fatal("concurrent policy updates overlapped")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
 func TestMinIOAdminClient_BuildWorkerPolicy(t *testing.T) {
 	c := NewMinIOAdminClient(Config{Bucket: "agentteams-storage"})
 
@@ -67,8 +128,8 @@ func TestMinIOAdminClient_BuildWorkerPolicy(t *testing.T) {
 	if policy.Version != "2012-10-17" {
 		t.Errorf("Version = %q", policy.Version)
 	}
-	if len(policy.Statement) != 3 {
-		t.Fatalf("expected 3 statements, got %d", len(policy.Statement))
+	if len(policy.Statement) != 4 {
+		t.Fatalf("expected 4 statements, got %d", len(policy.Statement))
 	}
 
 	locationStmt := policy.Statement[0]
@@ -191,6 +252,22 @@ func TestMinIOAdminClient_BuildWorkerPolicy(t *testing.T) {
 	if !hasTeamDirResource {
 		t.Errorf("expected team directory resource in RW statement: %v", rwStmt.Resource)
 	}
+
+	packageStmt := policy.Statement[3]
+	if !stringSliceContains(packageStmt.Action, "s3:GetObject") {
+		t.Errorf("expected AgentSpec package read access: %v", packageStmt.Action)
+	}
+	if stringSliceContains(packageStmt.Action, "s3:PutObject") ||
+		stringSliceContains(packageStmt.Action, "s3:DeleteObject") {
+		t.Errorf("AgentSpec packages must remain read-only: %v", packageStmt.Action)
+	}
+	if !stringSliceContains(packageStmt.Resource,
+		"arn:aws:s3:::agentteams-storage/agentteams-config/packages/*") {
+		t.Errorf("expected AgentSpec package resource: %v", packageStmt.Resource)
+	}
+	if !stringSliceContains(prefixes, "agentteams-config/packages/*") {
+		t.Errorf("expected AgentSpec package list prefix: %v", prefixes)
+	}
 }
 
 func TestMinIOAdminClient_BuildWorkerPolicyNoTeam(t *testing.T) {
@@ -259,15 +336,12 @@ func TestMinIOAdminClient_BuildManagerPolicy(t *testing.T) {
 	}
 }
 
-func TestMinIOAdminClient_EnsurePolicyDetachesBeforeReplace(t *testing.T) {
+func TestMinIOAdminClient_EnsurePolicyUpdatesWithoutAuthorizationGap(t *testing.T) {
 	dir := t.TempDir()
 	argsPath := filepath.Join(dir, "args")
 	mcPath := filepath.Join(dir, "mc")
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "$MC_ARGS_FILE"
-case "$*" in
-  "admin policy detach "*|"admin policy remove "*) exit 1 ;;
-esac
 exit 0
 `
 	if err := os.WriteFile(mcPath, []byte(script), 0755); err != nil {
@@ -288,12 +362,10 @@ exit 0
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 4 {
-		t.Fatalf("mc calls = %v, want detach/remove/create/attach", lines)
+	if len(lines) != 2 {
+		t.Fatalf("mc calls = %v, want create/attach without detach/remove", lines)
 	}
 	wantPrefixes := []string{
-		"admin policy detach agentteams worker-worker-1 --user worker-1",
-		"admin policy remove agentteams worker-worker-1",
 		"admin policy create agentteams worker-worker-1 ",
 		"admin policy attach agentteams worker-worker-1 --user worker-1",
 	}

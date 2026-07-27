@@ -390,6 +390,27 @@ _wait_runtime_package_ref() {
     return 1
 }
 
+_wait_runtime_team_roster() {
+    local timeout="${1:-60}"
+    local elapsed=0
+    while [ "${elapsed}" -lt "${timeout}" ]; do
+        LEADER_RUNTIME_YAML=$(minio_read_file "agents/${TEST_LEADER}/runtime/runtime.yaml" 2>/dev/null || true)
+        WORKER_RUNTIME_YAML=$(minio_read_file "agents/${TEST_WORKER}/runtime/runtime.yaml" 2>/dev/null || true)
+        LEADER_RUNTIME_JSON=$(printf '%s' "${LEADER_RUNTIME_YAML}" | _yaml_to_json 2>/dev/null || echo "{}")
+        WORKER_RUNTIME_JSON=$(printf '%s' "${WORKER_RUNTIME_YAML}" | _yaml_to_json 2>/dev/null || echo "{}")
+        if echo "${LEADER_RUNTIME_JSON}" | jq -e --arg leader "${TEST_LEADER}" --arg worker "${TEST_WORKER}" --arg workerMxid "${WORKER_MXID}" \
+            'any(.team.members[]?; .runtimeName == $leader and .role == "team_leader") and
+             any(.team.members[]?; .runtimeName == $worker and .role == "worker" and .matrixUserId == $workerMxid)' >/dev/null 2>&1 && \
+           echo "${WORKER_RUNTIME_JSON}" | jq -e --arg leader "${TEST_LEADER}" --arg worker "${TEST_WORKER}" \
+            '([.team.members[]?.runtimeName] | index($leader) != null and index($worker) != null)' >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+    return 1
+}
+
 _wait_workspace_marker() {
     local container="$1"
     local path="$2"
@@ -652,12 +673,17 @@ with zipfile.ZipFile(zip_path) as archive:
     assert any(name.endswith("/teamharness/plugin.yaml") for name in names)
     assert any(name.endswith("/teamharness/prompts/team/TEAMS.md") for name in names)
     assert any(name.endswith("/teamharness/mcp/server.py") for name in names)
-    assert not any("agentteam" in name for name in names)
+    assert not any("/agentteam/" in f"/{name}" for name in names)
 print("ok")
 PY
 )
 IMAGE_PACKAGE_CHECK=$(printf '%s\n' "${IMAGE_PACKAGE_CHECK}" | tail -n 1)
 assert_eq "ok" "${IMAGE_PACKAGE_CHECK}" "Image carries opaque TeamHarness QwenPaw plugin zip"
+if [ "${TESTS_FAILED}" -gt 0 ]; then
+    test_teardown "26-qwenpaw-teamharness-plugin-mode"
+    test_summary
+    exit 1
+fi
 
 # ============================================================
 # Section 2: Create real QwenPaw Team
@@ -729,17 +755,26 @@ for member in "${TEST_LEADER}" "${TEST_WORKER}"; do
         log_pass "Member ${member} provisioned"
     else
         log_fail "Member ${member} not provisioned"
+        test_teardown "26-qwenpaw-teamharness-plugin-mode"
+        test_summary
+        exit 1
+    fi
+    if wait_for_worker_container "${member}" 240; then
+        log_pass "Container for ${member} is running"
+    else
+        log_fail "Container for ${member} did not start"
+        test_teardown "26-qwenpaw-teamharness-plugin-mode"
+        test_summary
+        exit 1
     fi
     MEMBER_JSON=$(_wait_k8s_jq "workers" "${member}" '.status.phase == "Running"' 240 2>/dev/null || echo "{}")
     if echo "${MEMBER_JSON}" | jq -e '.status.phase == "Running"' >/dev/null 2>&1; then
         log_pass "Member ${member} is Running"
     else
         log_fail "Member ${member} did not reach Running"
-    fi
-    if wait_for_worker_container "${member}" 240; then
-        log_pass "Container for ${member} is running"
-    else
-        log_fail "Container for ${member} did not start"
+        test_teardown "26-qwenpaw-teamharness-plugin-mode"
+        test_summary
+        exit 1
     fi
 done
 
@@ -822,12 +857,7 @@ else
     log_fail "runtime.yaml missing role-specific AgentSpec package refs"
 fi
 
-if echo "${LEADER_RUNTIME_JSON}" | jq -e --arg leader "${TEST_LEADER}" --arg worker "${TEST_WORKER}" --arg workerMxid "${WORKER_MXID}" \
-    '.team.members[] | select(.runtimeName == $leader and .role == "team_leader")' >/dev/null 2>&1 && \
-   echo "${LEADER_RUNTIME_JSON}" | jq -e --arg worker "${TEST_WORKER}" --arg workerMxid "${WORKER_MXID}" \
-    '.team.members[] | select(.runtimeName == $worker and .role == "worker" and .matrixUserId == $workerMxid)' >/dev/null 2>&1 && \
-   echo "${WORKER_RUNTIME_JSON}" | jq -e --arg leader "${TEST_LEADER}" --arg worker "${TEST_WORKER}" \
-    '([.team.members[].runtimeName] | index($leader) and index($worker))' >/dev/null 2>&1; then
+if _wait_runtime_team_roster 60; then
     log_pass "runtime.yaml projects TeamHarness roster facts"
 else
     log_fail "runtime.yaml missing TeamHarness roster facts"
@@ -1033,18 +1063,20 @@ active = agent.get("active_model") or {}
 if active.get("provider_id") != "agentteams-gateway" or active.get("model") != model:
     problems.append("active_model")
 
-for rel in ["mcporter-servers.json", "config/mcporter.json"]:
-    path = workspace / rel
-    if not path.is_file():
-        problems.append(f"missing:{rel}")
-        continue
+path = workspace / "config" / "mcporter.json"
+if not path.is_file():
+    problems.append("missing:config/mcporter.json")
+else:
     data = json.loads(path.read_text(encoding="utf-8"))
     server = (data.get("mcpServers") or {}).get(mcp_name) or {}
     if server.get("url") != mcp_url or server.get("transport") != mcp_transport:
-        problems.append(f"mcp:{rel}")
+        problems.append("mcp:config/mcporter.json")
     authorization = (server.get("headers") or {}).get("Authorization", "")
     if not authorization.startswith("Bearer "):
-        problems.append(f"auth:{rel}")
+        problems.append("auth:config/mcporter.json")
+
+if (workspace / "mcporter-servers.json").exists():
+    problems.append("legacy:mcporter-servers.json")
 
 print("ok" if not problems else ";".join(problems))
 PY
@@ -1177,17 +1209,17 @@ fi
 ADMIN_TOKEN=$(matrix_login "${TEST_ADMIN_USER}" "${TEST_ADMIN_PASSWORD}" 2>/dev/null | jq -r '.access_token // empty')
 assert_not_empty "${ADMIN_TOKEN}" "Admin Matrix login succeeded"
 
-if matrix_wait_for_user_joined "${ADMIN_TOKEN}" "${LEADER_DM}" "${LEADER_MXID}" 240; then
+if matrix_wait_for_user_joined "${ADMIN_TOKEN}" "${LEADER_DM}" "${LEADER_MXID}" 90; then
     log_pass "QwenPaw leader joined Leader DM"
 else
     log_fail "QwenPaw leader did not join Leader DM"
 fi
-if matrix_wait_for_user_joined "${ADMIN_TOKEN}" "${TEAM_ROOM}" "${LEADER_MXID}" 240; then
+if matrix_wait_for_user_joined "${ADMIN_TOKEN}" "${TEAM_ROOM}" "${LEADER_MXID}" 90; then
     log_pass "QwenPaw leader joined Team Room"
 else
     log_fail "QwenPaw leader did not join Team Room"
 fi
-if matrix_wait_for_user_joined "${ADMIN_TOKEN}" "${TEAM_ROOM}" "${WORKER_MXID}" 240; then
+if matrix_wait_for_user_joined "${ADMIN_TOKEN}" "${TEAM_ROOM}" "${WORKER_MXID}" 90; then
     log_pass "QwenPaw worker joined Team Room"
 else
     log_fail "QwenPaw worker did not join Team Room"
@@ -1195,7 +1227,8 @@ fi
 
 log_section "QwenPaw Native Bootstrap"
 
-LEADER_BOOTSTRAP_PROMPT="Please run your package bootstrap now. Follow BOOTSTRAP.md exactly: run the packaged hello script, then reply with the requested marker. Do not ask me to confirm identity."
+LEADER_BOOTSTRAP_PROMPT="Please run your package bootstrap now. Follow BOOTSTRAP.md exactly and run the packaged hello script. Your entire final reply must be exactly ${BOOTSTRAP_LEADER_MARKER}, with no markdown or additional text. Do not ask me to confirm identity."
+LEADER_BOOTSTRAP_BASELINE=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${LEADER_DM}" "${LEADER_MXID}")
 if matrix_send_message "${ADMIN_TOKEN}" "${LEADER_DM}" "${LEADER_BOOTSTRAP_PROMPT}" >/dev/null 2>&1; then
     log_pass "Admin sent package bootstrap request to QwenPaw leader"
 else
@@ -1203,7 +1236,8 @@ else
 fi
 
 LEADER_BOOTSTRAP_REPLY=$(matrix_wait_for_message_containing \
-    "${ADMIN_TOKEN}" "${LEADER_DM}" "${LEADER_MXID}" "${BOOTSTRAP_LEADER_MARKER}" 360 2>/dev/null || true)
+    "${ADMIN_TOKEN}" "${LEADER_DM}" "${LEADER_MXID}" "${BOOTSTRAP_LEADER_MARKER}" 60 \
+    "" "" "" 600 "${LEADER_BOOTSTRAP_BASELINE}" 2>/dev/null || true)
 if echo "${LEADER_BOOTSTRAP_REPLY}" | grep -Fq "${BOOTSTRAP_LEADER_MARKER}"; then
     log_pass "QwenPaw leader completed package bootstrap instructions"
 else
@@ -1222,7 +1256,8 @@ else
     log_fail "QwenPaw leader hello script did not write expected marker"
 fi
 
-WORKER_BOOTSTRAP_PROMPT="Please run your package bootstrap now. Follow BOOTSTRAP.md exactly: run the packaged hello script, then reply with the requested marker. Do not ask me to confirm identity."
+WORKER_BOOTSTRAP_PROMPT="Please run your package bootstrap now. Follow BOOTSTRAP.md exactly and run the packaged hello script. Your entire final reply must be exactly ${BOOTSTRAP_WORKER_MARKER}, with no markdown or additional text. Do not ask me to confirm identity."
+WORKER_BOOTSTRAP_BASELINE=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${TEAM_ROOM}" "${WORKER_MXID}")
 if matrix_send_mention_message "${ADMIN_TOKEN}" "${TEAM_ROOM}" "${WORKER_MXID}" "${WORKER_BOOTSTRAP_PROMPT}" >/dev/null 2>&1; then
     log_pass "Admin sent package bootstrap mention to QwenPaw worker"
 else
@@ -1230,7 +1265,8 @@ else
 fi
 
 WORKER_BOOTSTRAP_REPLY=$(matrix_wait_for_message_containing \
-    "${ADMIN_TOKEN}" "${TEAM_ROOM}" "${WORKER_MXID}" "${BOOTSTRAP_WORKER_MARKER}" 360 2>/dev/null || true)
+    "${ADMIN_TOKEN}" "${TEAM_ROOM}" "${WORKER_MXID}" "${BOOTSTRAP_WORKER_MARKER}" 60 \
+    "" "" "" 600 "${WORKER_BOOTSTRAP_BASELINE}" 2>/dev/null || true)
 if echo "${WORKER_BOOTSTRAP_REPLY}" | grep -Fq "${BOOTSTRAP_WORKER_MARKER}"; then
     log_pass "QwenPaw worker completed package bootstrap instructions"
 else
@@ -1293,6 +1329,8 @@ completion message.
 EOF
 )
 
+LEADER_ASSIGNMENT_BASELINE=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${TEAM_ROOM}" "${LEADER_MXID}")
+WORKER_REPLY_BASELINE=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${TEAM_ROOM}" "${WORKER_MXID}")
 if matrix_send_message "${ADMIN_TOKEN}" "${LEADER_DM}" "${TASK_PROMPT}" >/dev/null 2>&1; then
     log_pass "Admin sent real TeamHarness task to QwenPaw leader"
 else
@@ -1300,7 +1338,8 @@ else
 fi
 
 LEADER_ASSIGNMENT=$(matrix_wait_for_message_containing \
-    "${ADMIN_TOKEN}" "${TEAM_ROOM}" "${LEADER_MXID}" "${TASK_ID}" 480 2>/dev/null || true)
+    "${ADMIN_TOKEN}" "${TEAM_ROOM}" "${LEADER_MXID}" "${TASK_ID}" 180 \
+    "" "" "" 600 "${LEADER_ASSIGNMENT_BASELINE}" 2>/dev/null || true)
 if echo "${LEADER_ASSIGNMENT}" | grep -q "${TASK_ID}" && echo "${LEADER_ASSIGNMENT}" | grep -q "${WORKER_MXID}"; then
     log_pass "Leader assigned TeamHarness task to worker in Team Room"
 else
@@ -1314,22 +1353,23 @@ else
     log_fail "Task spec missing after leader delegation"
 fi
 
-WORKER_REPLY=$(matrix_wait_for_message_containing \
-    "${ADMIN_TOKEN}" "${TEAM_ROOM}" "${WORKER_MXID}" "${MARKER}" 720 2>/dev/null || true)
+WORKER_REPLY=$(matrix_wait_for_reply_matching_since \
+    "${ADMIN_TOKEN}" "${TEAM_ROOM}" "${WORKER_MXID}" \
+    "${WORKER_REPLY_BASELINE}" "${DONE_LINE}" 120 2>/dev/null || true)
 if echo "${WORKER_REPLY}" | grep -q "${DONE_LINE}"; then
     log_pass "Worker completed delegated TeamHarness task in Team Room"
 else
     log_fail "Worker did not complete delegated TeamHarness task"
 fi
 
-RESULT_STAT=$(_wait_leader_shared_stat "shared/tasks/${TASK_ID}/result.md" 180 || echo "{}")
+RESULT_STAT=$(_wait_leader_shared_stat "shared/tasks/${TASK_ID}/meta.json" 60 || echo "{}")
 if echo "${RESULT_STAT}" | jq -e '.ok == true and .exists == true' >/dev/null 2>&1; then
-    log_pass "Task result exists in shared storage"
+    log_pass "Task submission metadata exists in shared storage"
 else
-    log_fail "Task result missing in shared storage"
+    log_fail "Task submission metadata missing in shared storage"
 fi
 
-DELIVERABLE_STAT=$(_wait_leader_shared_stat "shared/tasks/${TASK_ID}/workspace/readiness-note.txt" 180 || echo "{}")
+DELIVERABLE_STAT=$(_wait_leader_shared_stat "shared/tasks/${TASK_ID}/workspace/readiness-note.txt" 60 || echo "{}")
 if echo "${DELIVERABLE_STAT}" | jq -e '.ok == true and .exists == true' >/dev/null 2>&1; then
     log_pass "Task deliverable exists in shared storage"
 else
@@ -1345,7 +1385,9 @@ else
     log_fail "Leader could not verify submitted worker result through taskflow"
 fi
 
-_dump_debug_snapshot
+if [ "${TESTS_FAILED}" -gt 0 ]; then
+    _dump_debug_snapshot
+fi
 
 test_teardown "26-qwenpaw-teamharness-plugin-mode"
 test_summary

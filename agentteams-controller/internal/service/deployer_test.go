@@ -169,6 +169,107 @@ func TestDeployWorkerConfigInjectsTeamLeaderContext(t *testing.T) {
 	}
 }
 
+func TestPrepareAndPushAgentsMDPreservesTeamLeaderBuiltinDuringStandaloneReconcile(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	workerAgentDir := filepath.Join(tmp, "worker-agent")
+	copawAgentDir := filepath.Join(tmp, "copaw-worker-agent")
+	leaderAgentDir := filepath.Join(tmp, "team-leader-agent")
+	if err := os.MkdirAll(workerAgentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(copawAgentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(leaderAgentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(copawAgentDir, "AGENTS.md"), []byte("# Worker\n\nstandalone worker builtin\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	leaderBuiltin := "# Team Leader\n\nproject and task coordination builtin\n"
+	if err := os.WriteFile(filepath.Join(leaderAgentDir, "AGENTS.md"), []byte(leaderBuiltin), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := ossfake.NewMemory()
+	existing := agentconfig.MergeBuiltinSection("", leaderBuiltin)
+	existing = agentconfig.InjectCoordinationContext(existing, agentconfig.CoordinationContext{
+		Role:       "team_leader",
+		TeamName:   "demo-team",
+		TeamRoomID: "!team:matrix.local",
+		TeamWorkers: []agentconfig.TeamWorkerInfo{{
+			Name:   "dev",
+			RoomID: "!dev:matrix.local",
+		}},
+	})
+	if err := store.PutObject(ctx, "agents/leader/AGENTS.md", []byte(existing)); err != nil {
+		t.Fatal(err)
+	}
+
+	deployer := NewDeployer(DeployerConfig{
+		OSS:            store,
+		WorkerAgentDir: workerAgentDir,
+	})
+	if err := deployer.prepareAndPushAgentsMD(ctx, "leader", "agents/leader", "standalone", "copaw", "", "", "", nil, ""); err != nil {
+		t.Fatalf("prepareAndPushAgentsMD failed: %v", err)
+	}
+
+	got, err := store.GetObject(ctx, "agents/leader/AGENTS.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if !strings.Contains(text, "project and task coordination builtin") {
+		t.Fatalf("team leader builtin was overwritten by standalone reconcile:\n%s", text)
+	}
+	if strings.Contains(text, "standalone worker builtin") {
+		t.Fatalf("standalone worker builtin replaced team leader builtin:\n%s", text)
+	}
+}
+
+func TestPrepareAndPushAgentsMDPreservesQwenPawTeamLeaderBuiltinWithoutMarkdownContext(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	workerAgentDir := filepath.Join(tmp, "worker-agent")
+	copawAgentDir := filepath.Join(tmp, "copaw-worker-agent")
+	if err := os.MkdirAll(workerAgentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(copawAgentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(copawAgentDir, "AGENTS.md"), []byte("# QwenPaw Worker Agent Workspace\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := ossfake.NewMemory()
+	existing := agentconfig.MergeBuiltinSection("", "# Team Leader Agent\n\nproject and task coordination builtin\n")
+	if err := store.PutObject(ctx, "agents/leader/AGENTS.md", []byte(existing)); err != nil {
+		t.Fatal(err)
+	}
+
+	deployer := NewDeployer(DeployerConfig{
+		OSS:            store,
+		WorkerAgentDir: workerAgentDir,
+	})
+	if err := deployer.prepareAndPushAgentsMD(ctx, "leader", "agents/leader", "standalone", "copaw", "", "", "", nil, ""); err != nil {
+		t.Fatalf("prepareAndPushAgentsMD failed: %v", err)
+	}
+
+	got, err := store.GetObject(ctx, "agents/leader/AGENTS.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if !strings.Contains(text, "# Team Leader Agent") {
+		t.Fatalf("QwenPaw team leader builtin was overwritten by standalone reconcile:\n%s", text)
+	}
+	if strings.Contains(text, "# QwenPaw Worker Agent Workspace") {
+		t.Fatalf("standalone QwenPaw builtin replaced team leader builtin:\n%s", text)
+	}
+}
+
 func TestDeployWorkerConfigInlineSoulOverridesPackageSeed(t *testing.T) {
 	ctx := context.Background()
 	tmp := t.TempDir()

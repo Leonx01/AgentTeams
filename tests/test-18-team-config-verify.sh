@@ -228,6 +228,11 @@ assert_eq "worker" "${W2_ROLE}" "Worker 2 has role=worker"
 # ============================================================
 log_section "Verify Leader AGENTS.md"
 
+# Team phase becomes Active before the final role-specific prompt overlay can
+# finish writing to object storage. Wait for the Team-owned facts instead of
+# snapshotting the earlier standalone Worker prompt.
+wait_agent_file_contains "${TEST_LEADER}" "AGENTS.md" "Upstream" 120 || true
+wait_agent_file_contains "${TEST_LEADER}" "AGENTS.md" "${TEST_TEAM}" 120 || true
 LEADER_AGENTS=$(exec_in_manager mc cat "${STORAGE_PREFIX}/agents/${TEST_LEADER}/AGENTS.md" 2>/dev/null || echo "")
 assert_not_empty "${LEADER_AGENTS}" "Leader AGENTS.md exists in MinIO"
 
@@ -246,6 +251,10 @@ assert_contains "${LEADER_AGENTS}" "${TEST_TEAM}" "Leader coordination: referenc
 # ============================================================
 log_section "Verify Team Worker AGENTS.md"
 
+wait_agent_file_contains \
+    "${TEST_W1}" "AGENTS.md" "@${TEST_LEADER}:" 120 || true
+wait_agent_file_contains \
+    "${TEST_W1}" "AGENTS.md" "agentteams-builtin-end" 120 || true
 W1_AGENTS=$(exec_in_manager mc cat "${STORAGE_PREFIX}/agents/${TEST_W1}/AGENTS.md" 2>/dev/null || echo "")
 assert_not_empty "${W1_AGENTS}" "Worker 1 AGENTS.md exists in MinIO"
 
@@ -358,7 +367,7 @@ else
 fi
 
 # Manager: should have Leader but NOT team workers
-MGR_GAF=$(exec_in_manager mc cat "${STORAGE_PREFIX}/agents/manager/openclaw.json" 2>/dev/null | jq -r '.channels.matrix.groupAllowFrom[]' 2>/dev/null)
+MGR_GAF=$(exec_in_manager mc cat "${STORAGE_PREFIX}/manager/openclaw.json" 2>/dev/null | jq -r '.channels.matrix.groupAllowFrom[]' 2>/dev/null)
 if echo "${MGR_GAF}" | grep -q "@${TEST_LEADER}:"; then
     log_pass "Manager groupAllowFrom includes Leader"
 else

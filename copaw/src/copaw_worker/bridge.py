@@ -9,12 +9,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Sentinel returned by controller-field derivations when a value should remain
+# untouched during this bridge pass.
+_MISSING: Any = object()
+
 import json
 import os
 import shutil
 from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 def _port_remap(url: str, is_container: bool) -> str:
@@ -98,7 +102,8 @@ def bridge_controller_to_copaw(
     openclaw_cfg: dict[str, Any],
     working_dir: Path,
     *,
-    profile: str = "manager",
+    profile: str = "worker",
+    agent: str = "default",
 ) -> None:
     """
     Read openclaw_cfg (parsed openclaw.json) and write:
@@ -111,11 +116,22 @@ def bridge_controller_to_copaw(
     path constants so the running process uses the correct directory.
 
     """
+    if profile not in ("worker", "manager"):
+        raise ValueError(
+            f"unknown bridge profile: {profile!r} (use 'worker' or 'manager')"
+        )
+
     working_dir.mkdir(parents=True, exist_ok=True)
     in_container = _is_in_container()
 
-    _write_config_json(openclaw_cfg, working_dir, in_container)
-    _write_agent_json(openclaw_cfg, working_dir, in_container, profile=profile)
+    _write_config_json(working_dir)
+    _write_agent_json(
+        openclaw_cfg,
+        working_dir,
+        in_container,
+        profile=profile,
+        agent=agent,
+    )
     _write_providers_json(openclaw_cfg, working_dir, in_container)
 
     os.environ["COPAW_WORKING_DIR"] = str(working_dir)
@@ -128,6 +144,232 @@ def bridge_controller_to_copaw(
     providers_src = working_dir / "providers.json"
     if providers_src.exists():
         shutil.copy2(providers_src, secret_dir / "providers.json")
+
+
+def bridge_standard_to_runtime(
+    standard_dir: Path,
+    runtime_dir: Path,
+    controller_config: dict[str, Any],
+    *,
+    skill_names: list[str] | None = None,
+    profile: str = "worker",
+) -> None:
+    """Materialize standard-space files into CoPaw's default workspace."""
+    sync_outer_prompt_files_to_inner(standard_dir, runtime_dir)
+    bridge_controller_to_copaw(
+        controller_config,
+        runtime_dir,
+        profile=profile,
+    )
+    sync_mcporter_config_to_runtime(standard_dir, runtime_dir)
+    if skill_names is not None:
+        sync_skills_to_runtime(standard_dir, runtime_dir, skill_names)
+
+
+def refresh_standard_to_runtime(
+    standard_dir: Path,
+    runtime_dir: Path,
+    controller_config: dict[str, Any],
+    *,
+    get_soul: Callable[[], str | None],
+    get_agents_md: Callable[[], str | None],
+    skill_names: list[str] | None = None,
+    profile: str = "worker",
+) -> None:
+    """Refresh CoPaw runtime files, including legacy prompt fallbacks."""
+    sync_rebridged_prompt_files_to_inner(
+        standard_dir,
+        runtime_dir,
+        get_soul=get_soul,
+        get_agents_md=get_agents_md,
+    )
+    bridge_controller_to_copaw(
+        controller_config,
+        runtime_dir,
+        profile=profile,
+    )
+    sync_mcporter_config_to_runtime(standard_dir, runtime_dir)
+    if skill_names is not None:
+        sync_skills_to_runtime(standard_dir, runtime_dir, skill_names)
+
+
+def sync_mcporter_config_to_runtime(
+    standard_dir: Path,
+    runtime_dir: Path,
+) -> Path | None:
+    """Copy mcporter config into CoPaw's default workspace."""
+    src_candidates = (
+        standard_dir / "config" / "mcporter.json",
+        standard_dir / "mcporter-servers.json",
+    )
+    src = next((candidate for candidate in src_candidates if candidate.exists()), None)
+    if src is None:
+        return None
+
+    dst = runtime_dir / "workspaces" / "default" / "config" / "mcporter.json"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+    return dst
+
+
+def sync_skills_to_runtime(
+    standard_dir: Path,
+    runtime_dir: Path,
+    skill_names: list[str],
+) -> list[str]:
+    """Expose controller-managed skills in CoPaw's default workspace."""
+    standard_skills_dir = standard_dir / "skills"
+    standard_skills_dir.mkdir(parents=True, exist_ok=True)
+
+    for script in standard_skills_dir.rglob("*.sh"):
+        script.chmod(script.stat().st_mode | 0o111)
+
+    desired = set(skill_names)
+    for child in list(standard_skills_dir.iterdir()):
+        if child.is_dir() and child.name not in desired:
+            shutil.rmtree(child)
+
+    workspace_skills_dir = runtime_dir / "workspaces" / "default" / "skills"
+    workspace_skills_dir.parent.mkdir(parents=True, exist_ok=True)
+    _dedup_customized_skills(runtime_dir)
+
+    expected_target = standard_skills_dir.resolve()
+    if workspace_skills_dir.is_symlink():
+        if workspace_skills_dir.resolve() != expected_target:
+            workspace_skills_dir.unlink()
+    elif workspace_skills_dir.exists():
+        if workspace_skills_dir.is_dir():
+            shutil.rmtree(workspace_skills_dir)
+        else:
+            workspace_skills_dir.unlink()
+
+    if not workspace_skills_dir.exists():
+        target = os.path.relpath(standard_skills_dir, workspace_skills_dir.parent)
+        workspace_skills_dir.symlink_to(target, target_is_directory=True)
+
+    installed = [
+        skill_name
+        for skill_name in skill_names
+        if (standard_skills_dir / skill_name).exists()
+    ]
+    _enable_workspace_skills(runtime_dir, installed)
+    return installed
+
+
+def _enable_workspace_skills(runtime_dir: Path, skill_names: list[str]) -> None:
+    if not skill_names:
+        return
+
+    workspace_dir = runtime_dir / "workspaces" / "default"
+    manifest_path = workspace_dir / "skill.json"
+    manifest: dict[str, Any] = {
+        "schema_version": "workspace-skill-manifest.v1",
+        "version": 1,
+        "skills": {},
+    }
+    if manifest_path.exists():
+        try:
+            loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                manifest.update(loaded)
+        except json.JSONDecodeError:
+            logger.warning("Invalid CoPaw skill manifest, recreating: %s", manifest_path)
+
+    if not isinstance(manifest.get("skills"), dict):
+        manifest["skills"] = {}
+    skills = manifest["skills"]
+    changed = False
+    for skill_name in sorted(set(skill_names)):
+        if not (
+            workspace_dir / "skills" / skill_name / "SKILL.md"
+        ).exists():
+            continue
+        existing = skills.get(skill_name)
+        if isinstance(existing, dict):
+            if existing.get("enabled") is not True:
+                existing["enabled"] = True
+                changed = True
+            if not existing.get("channels"):
+                existing["channels"] = ["all"]
+                changed = True
+            continue
+        skills[skill_name] = {
+            "enabled": True,
+            "channels": ["all"],
+            "source": "customized",
+        }
+        changed = True
+
+    if changed or not manifest_path.exists():
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+
+def _dedup_customized_skills(runtime_dir: Path) -> None:
+    customized_dir = runtime_dir / "customized_skills"
+    if not customized_dir.is_dir():
+        return
+
+    try:
+        import copaw.agents.skills as skills_package
+
+        builtin_root = Path(skills_package.__file__).resolve().parent
+    except (ImportError, AttributeError):
+        return
+
+    builtin_names = {
+        child.name
+        for child in builtin_root.iterdir()
+        if child.is_dir() and not child.name.startswith("_")
+    }
+    for child in list(customized_dir.iterdir()):
+        if child.is_dir() and child.name in builtin_names:
+            shutil.rmtree(child)
+
+
+def sync_outer_prompt_files_to_inner(
+    standard_dir: Path,
+    runtime_dir: Path,
+) -> None:
+    """Copy standard prompt files into CoPaw's default workspace."""
+    workspace_dir = runtime_dir / "workspaces" / "default"
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+
+    for name in ("SOUL.md", "AGENTS.md"):
+        src = standard_dir / name
+        if src.exists():
+            (workspace_dir / name).write_text(src.read_text())
+
+    heartbeat_dst = workspace_dir / "HEARTBEAT.md"
+    if not heartbeat_dst.exists():
+        heartbeat_src = standard_dir / "HEARTBEAT.md"
+        if heartbeat_src.exists():
+            heartbeat_dst.write_text(heartbeat_src.read_text())
+
+
+def sync_rebridged_prompt_files_to_inner(
+    standard_dir: Path,
+    runtime_dir: Path,
+    *,
+    get_soul: Callable[[], str | None],
+    get_agents_md: Callable[[], str | None],
+) -> None:
+    """Refresh runtime prompts, falling back to legacy MinIO readers."""
+    soul_path = standard_dir / "SOUL.md"
+    agents_path = standard_dir / "AGENTS.md"
+    soul = soul_path.read_text() if soul_path.exists() else get_soul()
+    agents = agents_path.read_text() if agents_path.exists() else get_agents_md()
+
+    workspace_dir = runtime_dir / "workspaces" / "default"
+    if soul:
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        (workspace_dir / "SOUL.md").write_text(soul)
+    if agents:
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        (workspace_dir / "AGENTS.md").write_text(agents)
 
 
 # ---------------------------------------------------------------------------
@@ -217,83 +459,307 @@ def _resolve_matrix_user_id(
     return ""
 
 
+def _template_text(name: str) -> str:
+    """Read a bundled CoPaw configuration template."""
+    return (resources.files("copaw_worker") / "templates" / name).read_text(
+        encoding="utf-8"
+    )
+
+
+def _install_from_template(dst: Path, template_name: str) -> bool:
+    """Install a template only when the destination does not exist."""
+    if dst.exists():
+        return False
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(_template_text(template_name), encoding="utf-8")
+    return True
+
+
+def _matrix_raw(cfg: dict[str, Any]) -> dict[str, Any]:
+    return cfg.get("channels", {}).get("matrix", {})
+
+
+def _matrix_bool(
+    cfg: dict[str, Any],
+    camel_key: str,
+    snake_key: str,
+    default: bool,
+) -> bool:
+    matrix = _matrix_raw(cfg)
+    if camel_key in matrix:
+        return bool(matrix[camel_key])
+    if snake_key in matrix:
+        return bool(matrix[snake_key])
+    return default
+
+
+def _resolve_embedding_config(
+    cfg: dict[str, Any],
+    in_container: bool,
+) -> dict[str, Any] | None:
+    memory_search = (
+        cfg.get("agents", {})
+        .get("defaults", {})
+        .get("memorySearch", {})
+    )
+    if not memory_search:
+        return None
+
+    remote = memory_search.get("remote", {})
+    base_url = _port_remap(remote.get("baseUrl", ""), in_container)
+    model = memory_search.get("model", "")
+    if not base_url or not model:
+        return None
+
+    dimensions = (
+        memory_search.get("outputDimensionality")
+        or int(os.environ.get("AGENTTEAMS_EMBEDDING_DIMENSIONS", "0"))
+        or 1024
+    )
+    return {
+        "backend": "openai",
+        "api_key": remote.get("apiKey", ""),
+        "base_url": base_url,
+        "model_name": model,
+        "dimensions": dimensions,
+        "enable_cache": True,
+        "use_dimensions": False,
+    }
+
+
+def _resolve_history_limit(cfg: dict[str, Any]) -> int | None:
+    history_limit = _matrix_raw(cfg).get("historyLimit")
+    if history_limit is None:
+        history_limit = (
+            cfg.get("messages", {}).get("groupChat", {}).get("historyLimit")
+        )
+    return int(history_limit) if history_limit is not None else None
+
+
+def _derive_matrix_user_id(
+    cfg: dict[str, Any],
+    _in_container: bool = False,
+) -> Any:
+    user_id = _resolve_matrix_user_id(_matrix_raw(cfg))
+    return user_id or _MISSING
+
+
+def _derive_heartbeat(
+    cfg: dict[str, Any],
+    _in_container: bool = False,
+) -> Any:
+    heartbeat = cfg.get("agents", {}).get("defaults", {}).get("heartbeat")
+    if not isinstance(heartbeat, dict) or not heartbeat:
+        return _MISSING
+
+    result: dict[str, Any] = {"enabled": True}
+    if "every" in heartbeat:
+        result["every"] = heartbeat["every"]
+    if "target" in heartbeat:
+        result["target"] = heartbeat["target"]
+    if "activeHours" in heartbeat:
+        result["active_hours"] = heartbeat["activeHours"]
+    return result
+
+
+def _get_path(container: dict[str, Any], path: tuple[str, ...]) -> Any:
+    node: Any = container
+    for key in path:
+        if not isinstance(node, dict) or key not in node:
+            return _MISSING
+        node = node[key]
+    return node
+
+
+def _set_path(
+    container: dict[str, Any],
+    path: tuple[str, ...],
+    value: Any,
+) -> None:
+    node = container
+    for key in path[:-1]:
+        child = node.get(key)
+        if not isinstance(child, dict):
+            child = {}
+            node[key] = child
+        node = child
+    node[path[-1]] = value
+
+
+def _deep_merge_local_wins(remote: Any, local: Any) -> Any:
+    if isinstance(remote, dict) and isinstance(local, dict):
+        result: dict[str, Any] = {}
+        for key in remote.keys() | local.keys():
+            if key in remote and key in local:
+                result[key] = _deep_merge_local_wins(remote[key], local[key])
+            elif key in remote:
+                result[key] = remote[key]
+            else:
+                result[key] = local[key]
+        return result
+    return local
+
+
+def _union_list(remote: list[Any], local: list[Any]) -> list[Any]:
+    seen: set[str] = set()
+    result: list[Any] = []
+    for item in local + remote:
+        key = (
+            json.dumps(item, sort_keys=True)
+            if isinstance(item, (dict, list))
+            else repr(item)
+        )
+        if key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result
+
+
+def _apply_policy(
+    existing: dict[str, Any],
+    path: tuple[str, ...],
+    policy: str,
+    remote_value: Any,
+) -> None:
+    if remote_value is _MISSING:
+        return
+    if policy == "remote-wins":
+        _set_path(existing, path, remote_value)
+        return
+    if policy == "union":
+        local_value = _get_path(existing, path)
+        local_list = local_value if isinstance(local_value, list) else []
+        remote_list = remote_value if isinstance(remote_value, list) else []
+        _set_path(existing, path, _union_list(remote_list, local_list))
+        return
+    if policy == "deep-merge":
+        local_value = _get_path(existing, path)
+        value = (
+            remote_value
+            if local_value is _MISSING
+            else _deep_merge_local_wins(remote_value, local_value)
+        )
+        _set_path(existing, path, value)
+        return
+    if policy == "seed":
+        if _get_path(existing, path) is _MISSING:
+            _set_path(existing, path, remote_value)
+        return
+    raise ValueError(f"unknown merge policy: {policy}")
+
+
+_PolicyDeriver = Callable[[dict[str, Any], bool], Any]
+
+
+_CONTROLLER_FIELDS: list[
+    tuple[tuple[str, ...], str, _PolicyDeriver]
+] = [
+    (
+        ("channels", "matrix", "enabled"),
+        "remote-wins",
+        lambda c, _: _matrix_raw(c).get("enabled", True),
+    ),
+    (
+        ("channels", "matrix", "homeserver"),
+        "remote-wins",
+        lambda c, ic: _port_remap(_matrix_raw(c).get("homeserver", ""), ic),
+    ),
+    (
+        ("channels", "matrix", "access_token"),
+        "remote-wins",
+        lambda c, _: _matrix_raw(c).get("accessToken", ""),
+    ),
+    (
+        ("channels", "matrix", "user_id"),
+        "remote-wins",
+        _derive_matrix_user_id,
+    ),
+    (
+        ("channels", "matrix", "encryption"),
+        "remote-wins",
+        lambda c, _: _matrix_raw(c).get("encryption", False),
+    ),
+    (
+        ("channels", "matrix", "dm_policy"),
+        "remote-wins",
+        lambda c, _: _matrix_raw(c).get("dm", {}).get(
+            "policy", "allowlist"
+        ),
+    ),
+    (
+        ("channels", "matrix", "group_policy"),
+        "remote-wins",
+        lambda c, _: _matrix_raw(c).get("groupPolicy", "allowlist"),
+    ),
+    (
+        ("channels", "matrix", "filter_tool_messages"),
+        "remote-wins",
+        lambda c, _: _matrix_bool(
+            c, "filterToolMessages", "filter_tool_messages", False
+        ),
+    ),
+    (
+        ("channels", "matrix", "filter_thinking"),
+        "remote-wins",
+        lambda c, _: _matrix_bool(
+            c, "filterThinking", "filter_thinking", True
+        ),
+    ),
+    (
+        ("channels", "matrix", "vision_enabled"),
+        "remote-wins",
+        lambda c, _: _resolve_vision_enabled(c),
+    ),
+    (
+        ("channels", "matrix", "history_limit"),
+        "remote-wins",
+        lambda c, _: (
+            _resolve_history_limit(c)
+            if _resolve_history_limit(c) is not None
+            else _MISSING
+        ),
+    ),
+    (
+        ("channels", "matrix", "allow_from"),
+        "union",
+        lambda c, _: _matrix_raw(c).get("dm", {}).get("allowFrom", []) or [],
+    ),
+    (
+        ("channels", "matrix", "group_allow_from"),
+        "union",
+        lambda c, _: _matrix_raw(c).get("groupAllowFrom", []) or [],
+    ),
+    (
+        ("channels", "matrix", "groups"),
+        "deep-merge",
+        lambda c, _: _matrix_raw(c).get("groups", {}) or {},
+    ),
+    (
+        ("running", "max_input_length"),
+        "remote-wins",
+        lambda c, _: (
+            _resolve_context_window(c)
+            if _resolve_context_window(c) is not None
+            else _MISSING
+        ),
+    ),
+    (
+        ("running", "embedding_config"),
+        "remote-wins",
+        lambda c, ic: _resolve_embedding_config(c, ic) or _MISSING,
+    ),
+    (("heartbeat",), "seed", _derive_heartbeat),
+]
+
+
 # ---------------------------------------------------------------------------
 # config.json
 # ---------------------------------------------------------------------------
 
 def _write_config_json(
-    cfg: dict[str, Any],
     working_dir: Path,
-    in_container: bool,
 ) -> None:
-    matrix_raw = cfg.get("channels", {}).get("matrix", {})
-    homeserver = _port_remap(
-        matrix_raw.get("homeserver", ""), in_container
-    )
-    access_token = matrix_raw.get("accessToken", "")
-    user_id = _resolve_matrix_user_id(matrix_raw)
-
-    # DM allowlist
-    dm_cfg = matrix_raw.get("dm", {})
-    dm_policy = dm_cfg.get("policy", "allowlist")
-    dm_allow_from: list[str] = dm_cfg.get("allowFrom", [])
-
-    # Group allowlist
-    group_policy = matrix_raw.get("groupPolicy", "allowlist")
-    group_allow_from: list[str] = matrix_raw.get("groupAllowFrom", [])
-
-    # Per-room/group config (pass through as-is for MatrixChannel to use)
-    groups = matrix_raw.get("groups", {})
-
-    # History limit: openclaw uses camelCase "historyLimit", bridge to snake_case.
-    history_limit = matrix_raw.get("historyLimit")
-    if history_limit is None:
-        history_limit = (
-            cfg.get("messages", {}).get("groupChat", {}).get("historyLimit")
-        )
-
-    matrix_channel_cfg: dict[str, Any] = {
-        "enabled": matrix_raw.get("enabled", True),
-        "homeserver": homeserver,
-        "access_token": access_token,
-        "encryption": matrix_raw.get("encryption", False),
-        "dm_policy": dm_policy,
-        "allow_from": dm_allow_from,
-        "group_policy": group_policy,
-        "group_allow_from": group_allow_from,
-        "groups": groups,
-        "filter_tool_messages": True,
-        "filter_thinking": True,
-        "vision_enabled": _resolve_vision_enabled(cfg),
-    }
-    if history_limit is not None:
-        matrix_channel_cfg["history_limit"] = int(history_limit)
-    if user_id:
-        matrix_channel_cfg["user_id"] = user_id
-
-    config_path = working_dir / "config.json"
-    # Merge with existing config to avoid clobbering other settings
-    existing: dict[str, Any] = {}
-    if config_path.exists():
-        with open(config_path) as f:
-            existing = json.load(f)
-
-    existing.setdefault("channels", {})["matrix"] = matrix_channel_cfg
-    # Disable console channel (we use Matrix)
-    existing["channels"].setdefault("console", {})["enabled"] = False
-
-    # Bridge model context window → agents.running.max_input_length so that
-    # CoPaw's memory compaction threshold tracks the actual model capability.
-    # We read contextWindow from the first model of the primary (or first)
-    # provider to avoid hard-coding a default that mismatches the real model.
-    context_window = _resolve_context_window(cfg)
-    if context_window is not None:
-        existing.setdefault("agents", {}).setdefault("running", {})[
-            "max_input_length"
-        ] = context_window
-
-    with open(config_path, "w") as f:
-        json.dump(existing, f, indent=2, ensure_ascii=False)
+    _install_from_template(working_dir / "config.json", "config.json")
 
 
 
@@ -308,92 +774,28 @@ def _write_agent_json(
     in_container: bool,
     *,
     profile: str = "worker",
+    agent: str = "default",
 ) -> None:
-    """Create agent.json from template, then overlay Matrix channel config.
+    """Create agent.json from template, then overlay controller-owned fields."""
+    agent_path = working_dir / "workspaces" / agent / "agent.json"
+    _install_from_template(agent_path, f"agent.{profile}.json")
 
-    CoPaw 1.0.2+ reads workspace/agent.json for per-agent configuration.
-    The template provides defaults; we overlay controller-owned fields
-    (Matrix access_token, homeserver, allowlists, context window).
-    """
-    workspace_dir = working_dir / "workspaces" / "default"
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-    agent_path = workspace_dir / "agent.json"
-
-    # Install from template if missing
-    if not agent_path.exists():
-        template_name = f"agent.{profile}.json"
-        try:
-            # Try loading from package templates directory
-            tmpl_dir = Path(__file__).resolve().parent / "templates"
-            tmpl_path = tmpl_dir / template_name
-            if tmpl_path.exists():
-                shutil.copy2(str(tmpl_path), str(agent_path))
-            else:
-                # Fallback: create minimal agent.json
-                minimal = {
-                    "id": "default",
-                    "name": "Manager" if profile == "manager" else "Default Agent",
-                    "language": "zh",
-                    "channels": {
-                        "console": {"enabled": True},
-                        "matrix": {
-                            "enabled": True,
-                            "filter_tool_messages": False,
-                            "filter_thinking": True,
-                            "allow_from": [],
-                            "group_allow_from": [],
-                            "groups": {},
-                        },
-                    },
-                    "running": {"max_iters": 200},
-                }
-                with open(agent_path, "w") as f:
-                    json.dump(minimal, f, indent=2)
-        except Exception:
-            pass
-
-    # Load existing agent.json
     try:
         with open(agent_path) as f:
             agent_cfg = json.load(f)
-    except Exception:
-        agent_cfg = {"id": "default", "channels": {}, "running": {}}
+        if not isinstance(agent_cfg, dict):
+            raise ValueError("agent.json root is not an object")
+    except Exception as exc:
+        logger.warning("Re-seeding unreadable agent config %s: %s", agent_path, exc)
+        agent_path.unlink(missing_ok=True)
+        _install_from_template(agent_path, f"agent.{profile}.json")
+        with open(agent_path) as f:
+            agent_cfg = json.load(f)
 
-    # Overlay Matrix channel config from openclaw.json
-    matrix_raw = cfg.get("channels", {}).get("matrix", {})
-    homeserver = _port_remap(matrix_raw.get("homeserver", ""), in_container)
-    access_token = matrix_raw.get("accessToken", "")
-    user_id = _resolve_matrix_user_id(matrix_raw, profile=profile)
+    for path, policy, deriver in _CONTROLLER_FIELDS:
+        _apply_policy(agent_cfg, path, policy, deriver(cfg, in_container))
 
-    dm_cfg = matrix_raw.get("dm", {})
-    dm_allow_from: list[str] = dm_cfg.get("allowFrom", [])
-    group_allow_from: list[str] = matrix_raw.get("groupAllowFrom", [])
-    groups = matrix_raw.get("groups", {})
-
-    matrix_ch = agent_cfg.setdefault("channels", {}).setdefault("matrix", {})
-    matrix_ch["enabled"] = matrix_raw.get("enabled", True)
-    if homeserver:
-        matrix_ch["homeserver"] = homeserver
-    if access_token:
-        matrix_ch["access_token"] = access_token
-    if user_id:
-        matrix_ch["user_id"] = user_id
-    matrix_ch["allow_from"] = dm_allow_from
-    matrix_ch["group_allow_from"] = group_allow_from
-    matrix_ch["groups"] = groups
-    matrix_ch["filter_tool_messages"] = True
-    matrix_ch["filter_thinking"] = True
-
-    # Disable console channel (we use Matrix)
-    agent_cfg.setdefault("channels", {}).setdefault("console", {})["enabled"] = False
-
-    # Bridge context window
-    context_window = _resolve_context_window(cfg)
-    if context_window is not None:
-        agent_cfg.setdefault("running", {})["max_input_length"] = context_window
-
-    # Set workspace_dir
-    agent_cfg.setdefault("workspace_dir", str(workspace_dir))
+    agent_cfg.setdefault("workspace_dir", str(agent_path.parent))
 
     with open(agent_path, "w") as f:
         json.dump(agent_cfg, f, indent=2, ensure_ascii=False)

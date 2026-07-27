@@ -911,6 +911,20 @@ Dir.mktmpdir("teamharness-taskflow-") do |dir|
         raise AssertionError(f"result body should not create validation errors: {invalid_checked!r}")
     result_path_for_validation.write_text(original_result, encoding="utf-8")
 
+    os.environ["AGENTTEAMS_WORKER_ROLE"] = "standalone"
+    runtime_config.write_text(
+        "member:\\n  role: team_leader\\nteam:\\n  teamRoomId: '!team:example.test'\\n",
+        encoding="utf-8",
+    )
+    runtime_inferred_checked = payload("taskflow", {
+        "action": "check_task",
+        "payload": {"taskId": task_id},
+    })
+    if not runtime_inferred_checked.get("ok") or not runtime_inferred_checked.get("effective"):
+        raise AssertionError(
+            f"runtime team role should override the standalone container role: {runtime_inferred_checked!r}"
+        )
+
     forbidden_delegate = payload("taskflow", {
         "role": "worker",
         "action": "delegate_task",
@@ -938,6 +952,10 @@ Dir.mktmpdir("teamharness-taskflow-") do |dir|
         raise AssertionError(f"leader role should not submit: {forbidden_submit!r}")
 
     os.environ["AGENTTEAMS_WORKER_ROLE"] = "worker"
+    runtime_config.write_text(
+        "team:\\n  teamRoomId: '!team:example.test'\\n",
+        encoding="utf-8",
+    )
     remote_ack = payload("taskflow", {
         "action": "ack_task",
         "task_id": "remote-001",

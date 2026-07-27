@@ -14,7 +14,18 @@
    ```bash
    mkdir -p /root/agentteams-fs/shared/tasks/{task-id}
    ```
-   Write `meta.json` (type: "finite", status: "assigned") and `spec.md` (requirements, acceptance criteria, context).
+   Write `meta.json` using the taskflow-compatible schema:
+   ```json
+   {
+     "task_id": "{task-id}",
+     "project_id": "standalone",
+     "task_title": "{title}",
+     "assigned_to": "@{worker}:{domain}",
+     "room_id": "{room-id}",
+     "status": "assigned"
+   }
+   ```
+   Then write `spec.md` with requirements, acceptance criteria, and context.
 
 3. Push to MinIO **immediately** — Worker cannot file-sync until files are in MinIO:
    ```bash
@@ -23,26 +34,37 @@
    ```
    **Verify the push succeeded** (non-zero exit = retry). Do NOT proceed to step 4 until files are confirmed in MinIO.
 
-4. Notify Worker in their Room (never in admin DM):
+4. **MANDATORY — Register in state.json before dispatching** (this step is NOT optional, even for coordination, research, or management tasks):
 
-   **HARD RULE:** Do **not** put @worker task-assignment text in your admin DM reply. Workers cannot read the admin DM. The admin DM reply must only confirm to the admin (for example: assigned `{task-id}` to `{worker}`). The full dispatch with @mention MUST go to the Worker's Matrix room using the protocol below.
-
-   a) Get the Worker's `room_id` (and Matrix ID if needed):
+   a) Get the Worker's `room_id`:
    ```bash
    agt get workers -o json
    ```
 
-   b) Get your Manager runtime from the controller (source of truth):
+   b) Add the task before sending any Matrix assignment:
+   ```bash
+   bash /opt/agentteams/agent/skills/task-management/scripts/manage-state.sh \
+     --action add-finite --task-id {task-id} --title "{title}" \
+     --assigned-to {worker} --room-id {room-id}
+   ```
+   If task belongs to a project, append `--project-room-id {project-room-id}`.
+   **WARNING**: Registering after dispatch races fast Workers that may finish before the task is tracked. Do not notify the Worker until this command succeeds.
+
+5. Notify Worker in their Room (never in admin DM):
+
+   **HARD RULE:** Do **not** put @worker task-assignment text in your admin DM reply. Workers cannot read the admin DM. The admin DM reply must only confirm to the admin (for example: assigned `{task-id}` to `{worker}`). The full dispatch with @mention MUST go to the Worker's Matrix room using the protocol below.
+
+   a) Get your Manager runtime from the controller (source of truth):
    ```bash
    agt get managers -o json | jq -r '.managers[0].runtime'
    ```
 
-   c) Compose the body the Worker must receive (full Matrix @mention so they wake):
+   b) Compose the body the Worker must receive (full Matrix @mention so they wake):
    ```
-   @{worker}:{domain} New task [{task-id}]: {title}. Use your file-sync skill to pull the spec: shared/tasks/{task-id}/spec.md. @mention me when complete.
+   @{worker}:{domain} New task [{task-id}]: {title}. Use taskflow to accept the task, read shared/tasks/{task-id}/spec.md, and submit your structured result through taskflow. @mention me when complete.
    ```
 
-   d) Send that body to the Worker's room, branching on runtime from step (b):
+   c) Send that body to the Worker's room, branching on runtime from step (a):
 
    - **`openclaw`** — use the **message** tool with `channel=matrix` and `target=room:<ROOM_ID>` (the literal `room_id` value from step (a), prefixed with `room:`). Do not rely on the implicit current room when you are in an admin DM.
 
@@ -53,18 +75,9 @@
      --channel matrix \
      --target-session "<ROOM_ID>" \
      --target-user "@{worker}:${AGENTTEAMS_MATRIX_DOMAIN}" \
-     --text '@{worker}:{domain} New task [{task-id}]: {title}. Use your file-sync skill to pull the spec: shared/tasks/{task-id}/spec.md. @mention me when complete.'
+     --text '@{worker}:{domain} New task [{task-id}]: {title}. Use taskflow to accept the task, read shared/tasks/{task-id}/spec.md, and submit your structured result through taskflow. @mention me when complete.'
    ```
    (Quote `--text` so the shell preserves spaces and @mentions.)
-
-5. **MANDATORY — Add to state.json** (this step is NOT optional, even for coordination, research, or management tasks):
-   ```bash
-   bash /opt/agentteams/agent/skills/task-management/scripts/manage-state.sh \
-     --action add-finite --task-id {task-id} --title "{title}" \
-     --assigned-to {worker} --room-id {room-id}
-   ```
-   If task belongs to a project, append `--project-room-id {project-room-id}`.
-   **WARNING**: Skipping this step causes the Worker to be auto-stopped by idle timeout. Every task assigned to a Worker MUST be registered here.
 
 ## On completion
 
@@ -72,7 +85,7 @@
    ```bash
    mc mirror ${AGENTTEAMS_STORAGE_PREFIX}/shared/tasks/{task-id}/ /root/agentteams-fs/shared/tasks/{task-id}/ --overwrite
    ```
-2. Update `meta.json`: status=completed, fill completed_at. Push back to MinIO.
+2. Verify the structured `result.md`, then update `meta.json`: status=completed, fill completed_at. Push back to MinIO.
 3. Remove from state.json:
    ```bash
    bash /opt/agentteams/agent/skills/task-management/scripts/manage-state.sh \
@@ -100,10 +113,10 @@
 
 ```
 shared/tasks/{task-id}/
-├── meta.json     # Manager-maintained
+├── meta.json     # Taskflow state shared by Manager and Worker
 ├── spec.md       # Manager-written
 ├── base/         # Manager-maintained reference files (Workers must not overwrite)
 ├── plan.md       # Worker-written execution plan
-├── result.md     # Worker-written final result
+├── result.md     # Taskflow-written structured final result
 └── *             # Intermediate artifacts
 ```

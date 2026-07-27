@@ -107,9 +107,9 @@ def test_create_installs_config_json_from_template():
         cfg_path = working_dir / "config.json"
         assert cfg_path.exists()
         cfg = json.loads(cfg_path.read_text())
-        # Security defaults: all three guards disabled.
-        assert cfg["security"]["tool_guard"]["enabled"] is False
-        assert cfg["security"]["file_guard"]["enabled"] is False
+        # Security defaults come directly from the current template.
+        assert cfg["security"]["tool_guard"]["enabled"] is True
+        assert cfg["security"]["file_guard"]["enabled"] is True
         assert cfg["security"]["skill_scanner"]["mode"] == "off"
 
 
@@ -417,7 +417,7 @@ def test_manager_template_heartbeat_wins_over_openclaw_seed(monkeypatch):
     }
 
     agent = _bridge_and_read_agent(cfg, profile="manager")
-    assert agent["heartbeat"] == {"enabled": True, "every": "10m"}
+    assert agent["heartbeat"] == {"enabled": True, "every": "30m"}
 
 
 def test_worker_template_seeds_default_heartbeat_when_openclaw_silent():

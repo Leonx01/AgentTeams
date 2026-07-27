@@ -60,7 +60,7 @@ func (l *ManagerConfigStore) MatrixUserID(name string) string {
 }
 
 func (l *ManagerConfigStore) managerAgentPrefix() string {
-	return fmt.Sprintf("agents/%s", l.ManagerName)
+	return "manager"
 }
 
 // managerLocalConfigPath returns the local filesystem path for the manager's openclaw.json.

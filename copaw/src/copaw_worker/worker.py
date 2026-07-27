@@ -23,7 +23,10 @@ from rich.panel import Panel
 
 from copaw_worker.config import WorkerConfig
 from copaw_worker.sync import FileSync, sync_loop, push_loop
-from copaw_worker.bridge import bridge_controller_to_copaw
+from copaw_worker.bridge import (
+    bridge_controller_to_copaw,
+    bridge_standard_to_runtime,
+)
 from copaw_worker.worker_api import WorkerAPIServer
 from copaw_worker.health import HealthState, check_matrix_service
 
@@ -133,13 +136,15 @@ class Worker:
         self._copaw_working_dir = self.config.install_dir / self.worker_name / ".copaw"
         self._copaw_working_dir.mkdir(parents=True, exist_ok=True)
 
-        # Write SOUL.md / AGENTS.md into CoPaw working dir (read from local copies pulled by mirror_all)
-        for name in ("SOUL.md", "AGENTS.md"):
-            src = self.sync.local_dir / name
-            if src.exists():
-                (self._copaw_working_dir / name).write_text(src.read_text())
+        try:
+            startup_skills = await self._wait_for_required_role_skills()
+        except RuntimeError as exc:
+            console.print(f"[red]Required role skills not ready: {exc}[/red]")
+            return False
 
-        # 5. Bridge openclaw.json -> CoPaw config.json + providers.json
+        # 5. Materialize the standard sync root into CoPaw's native workspace.
+        #    CoPaw resolves system_prompt_files relative to
+        #    workspaces/default, not from the .copaw root.
         #    Infer gateway port from FS endpoint so bridge's _port_remap uses
         #    the correct host port instead of the hardcoded default.
         if not os.environ.get("AGENTTEAMS_PORT_GATEWAY"):
@@ -150,22 +155,23 @@ class Worker:
 
         console.print("[yellow]Bridging configuration to CoPaw...[/yellow]")
         try:
-            bridge_controller_to_copaw(openclaw_cfg, self._copaw_working_dir)
+            bridge_standard_to_runtime(
+                self.sync.local_dir,
+                self._copaw_working_dir,
+                openclaw_cfg,
+                skill_names=startup_skills,
+            )
         except Exception as exc:
             console.print(f"[red]Config bridge failed: {exc}[/red]")
             return False
 
-        # 6. Copy mcporter config into CoPaw working dir so mcporter finds
-        #    ./config/mcporter.json when running from COPAW_WORKING_DIR
-        self._copy_mcporter_config()
-
-        # 7. Install MatrixChannel into CoPaw's custom_channels dir
+        # 6. Install MatrixChannel into CoPaw's custom_channels dir
         self._install_matrix_channel()
 
-        # 8. Sync skills from MinIO into CoPaw's active_skills dir
+        # 7. Sync skills from MinIO into CoPaw's active_skills dir
         self._sync_skills()
 
-        # 9. Start background MinIO sync
+        # 8. Start background MinIO sync
         asyncio.create_task(
             sync_loop(
                 self.sync,
@@ -188,6 +194,51 @@ class Worker:
                 "(costs ~500MB extra RAM).[/dim]"
             )
         return True
+
+    async def _wait_for_required_role_skills(
+        self,
+        *,
+        max_attempts: int = 15,
+    ) -> list[str]:
+        """Wait briefly for controller-managed Team Leader skills."""
+        required = {
+            "project-management",
+            "task-management",
+            "team-coordination",
+        }
+        if not self.sync._is_team_leader():
+            return self.sync.list_skills()
+
+        for attempt in range(1, max_attempts + 1):
+            skills = self.sync.list_skills()
+            missing = required.difference(skills)
+            missing.update(
+                skill
+                for skill in required
+                if not (
+                    self.sync.local_dir / "skills" / skill / "SKILL.md"
+                ).is_file()
+            )
+            if not missing:
+                return skills
+            if attempt >= max_attempts:
+                missing_text = ", ".join(sorted(missing))
+                raise RuntimeError(
+                    f"missing {missing_text} after {max_attempts} attempts",
+                )
+            logger.info(
+                "Team Leader skills not ready yet (attempt %s/%s): %s",
+                attempt,
+                max_attempts,
+                ", ".join(sorted(missing)),
+            )
+            await asyncio.sleep(1)
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                self.sync.pull_all,
+            )
+
+        raise AssertionError("unreachable")
 
     # ------------------------------------------------------------------
     # CoPaw runner

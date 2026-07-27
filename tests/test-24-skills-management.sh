@@ -126,6 +126,8 @@ fi
 # Wait for the Controller API to reflect the update.
 log_info "Waiting for Worker CR to reflect skill change..."
 DEADLINE=$(( $(date +%s) + 30 ))
+UPDATE_RETRY_AT=$(( $(date +%s) + 15 ))
+UPDATE_RETRIED=false
 UPDATED_SKILLS=""
 while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
     UPDATED_SKILLS=$(_worker_skills_in_api "${TEST_WORKER}")
@@ -133,7 +135,15 @@ while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
         && ! echo "${UPDATED_SKILLS}" | jq -e 'index("github-operations")' >/dev/null 2>&1; then
         break
     fi
-    sleep 5
+    if [ "${UPDATE_RETRIED}" = false ] &&
+        [ "$(date +%s)" -ge "${UPDATE_RETRY_AT}" ]; then
+        log_info "Retrying the idempotent skills update once after unchanged API reads"
+        RETRY_OUTPUT=$(exec_in_agent agt update worker --name "${TEST_WORKER}" \
+            --skills git-delegation 2>&1) || true
+        UPDATE_OUTPUT="${UPDATE_OUTPUT}; retry: ${RETRY_OUTPUT}"
+        UPDATE_RETRIED=true
+    fi
+    sleep 3
 done
 
 log_info "Updated skills in Worker CR: ${UPDATED_SKILLS}"
