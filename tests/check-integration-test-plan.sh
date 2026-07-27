@@ -91,8 +91,8 @@ if ! grep -Fq 'Starting parallel controller lane' "${RUNNER}"; then
     fail "the orchestrator must expose when full-run controller parallelism is active"
 fi
 if ! sed -n '/^install-embedded:/,/^wait-ready-embedded:/p' "${MAKEFILE}" |
-    grep -Fq 'AGENTTEAMS_VERSION=$(VERSION)'; then
-    fail "make install-embedded must pass VERSION to the installer's env compatibility selector"
+    grep -Fq 'AGENTTEAMS_VERSION=$${AGENTTEAMS_VERSION:-$(VERSION)}'; then
+    fail "make install-embedded must preserve an explicit AGENTTEAMS_VERSION and fall back to VERSION"
 fi
 
 skills_test="${SCRIPT_DIR}/test-24-skills-management.sh"
