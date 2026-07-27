@@ -8,6 +8,7 @@ source "${SCRIPT_DIR}/lib/matrix-client.sh"
 source "${SCRIPT_DIR}/lib/higress-client.sh"
 source "${SCRIPT_DIR}/lib/minio-client.sh"
 source "${SCRIPT_DIR}/lib/agent-metrics.sh"
+source "${SCRIPT_DIR}/lib/finite-task-protocol.sh"
 
 test_setup "06-multi-worker"
 
@@ -129,6 +130,10 @@ ALICE_FILE="shared/tasks/${ALICE_TASK_ID}/workspace/alice.txt"
 BOB_FILE="shared/tasks/${BOB_TASK_ID}/workspace/bob.txt"
 ALICE_MARKER="ALICE_READY_${COLLAB_ID}"
 BOB_MARKER="BOB_VERIFIED_${COLLAB_ID}"
+ALICE_COMPLETION=$(finite_task_completion_instruction "${TEST_WORKER_RUNTIME}" \
+    "${ALICE_TASK_ID}" "Created the correlated Alice handoff" "[\"${ALICE_FILE}\"]")
+BOB_COMPLETION=$(finite_task_completion_instruction "${TEST_WORKER_RUNTIME}" \
+    "${BOB_TASK_ID}" "Verified Alice's handoff and created Bob's result" "[\"${BOB_FILE}\"]")
 
 _cleanup_collaboration_artifacts() {
     exec_in_manager mc rm -r --force \
@@ -173,7 +178,8 @@ matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" \
 - exact task ID: ${ALICE_TASK_ID}
 - exact output path: ${ALICE_FILE}
 - exact file content: ${ALICE_MARKER}
-- completion: submit SUCCESS via taskflow
+- completion protocol:
+${ALICE_COMPLETION}
 
 Copy these identifiers and strings verbatim into Alice's task spec. Do not add deliverables or ask for confirmation."
 
@@ -203,7 +209,8 @@ matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" \
 - exact output content, two lines:
 ${ALICE_MARKER}
 ${BOB_MARKER}
-- completion: submit SUCCESS via taskflow
+- completion protocol:
+${BOB_COMPLETION}
 
 Copy these identifiers, paths, and strings verbatim into Bob's task spec. Do not add deliverables or ask for confirmation." \
     >/dev/null

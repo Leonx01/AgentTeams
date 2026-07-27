@@ -166,16 +166,44 @@ assert_eq "failed" "${terminal_worker_wait}" \
     "worker readiness must fail immediately when an existing container is already exited"
 
 assign_task_test="${SCRIPT_DIR}/test-03-assign-task.sh"
+finite_task_protocol="${SCRIPT_DIR}/lib/finite-task-protocol.sh"
 finite_tasks_doc="${SCRIPT_DIR}/../manager/agent/skills/task-management/references/finite-tasks.md"
+if [ ! -f "${finite_task_protocol}" ] ||
+    ! grep -Fq 'copaw)' "${finite_task_protocol}" ||
+    ! grep -Fq 'taskflow action ack_task' "${finite_task_protocol}" ||
+    ! grep -Fq 'Do not invoke taskflow; it is only available to CoPaw Workers.' "${finite_task_protocol}" ||
+    ! grep -Fq 'STATUS: SUCCESS' "${finite_task_protocol}" ||
+    ! grep -Fq 'using your runtime-specific file-sync procedure' "${finite_task_protocol}"; then
+    fail "finite-task tests must preserve structured completion while selecting the protocol supported by each Worker runtime"
+fi
+# shellcheck source=lib/finite-task-protocol.sh
+source "${finite_task_protocol}"
+copaw_acceptance=$(finite_task_acceptance_instruction copaw task-check)
+hermes_acceptance=$(finite_task_acceptance_instruction hermes task-check)
+copaw_completion=$(finite_task_completion_instruction copaw task-check summary '[]')
+hermes_completion=$(finite_task_completion_instruction hermes task-check summary '[]')
+if ! printf '%s' "${copaw_acceptance}" | grep -Fq 'taskflow action ack_task' ||
+    printf '%s' "${hermes_acceptance}" | grep -Fq 'taskflow action ack_task' ||
+    ! printf '%s' "${hermes_acceptance}" | grep -Fq 'Do not invoke taskflow' ||
+    ! printf '%s' "${copaw_completion}" | grep -Fq 'taskflow action submit_task' ||
+    printf '%s' "${hermes_completion}" | grep -Fq 'taskflow action submit_task' ||
+    ! printf '%s' "${hermes_completion}" | grep -Fq 'STATUS: SUCCESS'; then
+    fail "finite-task protocol helper selected an unsupported Worker lifecycle"
+fi
 finite_state_line=$(grep -n -m1 -- '--action add-finite' "${finite_tasks_doc}" | cut -d: -f1)
 finite_notify_line=$(grep -n -m1 -F 'Notify Worker in their Room' "${finite_tasks_doc}" | cut -d: -f1)
 if [ -z "${finite_state_line}" ] || [ -z "${finite_notify_line}" ] ||
     [ "${finite_state_line}" -ge "${finite_notify_line}" ]; then
     fail "finite-task guidance must register state before notifying a Worker to avoid fast-completion races"
 fi
+if ! grep -Fq 'Get the Worker runtime together with its `room_id`' "${finite_tasks_doc}" ||
+    ! grep -Fq 'For a **CoPaw Worker**' "${finite_tasks_doc}" ||
+    ! grep -Fq 'For every **non-CoPaw Worker**' "${finite_tasks_doc}"; then
+    fail "finite-task dispatch guidance must select taskflow only for Workers that provide it"
+fi
 if ! grep -Fq 'minio_wait_for_content "${TASK_RESULT}" "STATUS: SUCCESS" 120' \
     "${assign_task_test}"; then
-    fail "test 03 must wait for a successful taskflow result with a bounded timeout"
+    fail "test 03 must wait for a successful structured result with a bounded timeout"
 fi
 
 if ! grep -A5 -F 'Task brief was not created within 120s' \
@@ -200,32 +228,31 @@ if ! grep -A5 -F 'Alice did not submit a successful result within 120s' \
 fi
 
 human_intervene_test="${SCRIPT_DIR}/test-04-human-intervene.sh"
-if ! grep -Fq 'Assign Alice one finite task through taskflow with exact ID ${TASK_ID}' "${human_intervene_test}"; then
-    fail "test 04 must create the intervention task through taskflow so Worker metadata exists"
+if ! grep -Fq 'Assign Alice one finite task with exact ID ${TASK_ID}' "${human_intervene_test}"; then
+    fail "test 04 must create the intervention task with a deterministic ID"
 fi
 if ! grep -Fq 'RESULT_FILE="${TASK_DIR}/workspace/hello.py"' "${human_intervene_test}"; then
-    fail "test 04 must verify the taskflow deliverable under the finite-task workspace directory"
+    fail "test 04 must verify the deliverable under the finite-task workspace directory"
 fi
 if ! grep -Fq 'project_id: "standalone"' "${human_intervene_test}" ||
     ! grep -Fq 'assigned_to: "alice"' "${human_intervene_test}" ||
     ! grep -Fq 'Do not recreate or replace its task metadata' "${human_intervene_test}"; then
-    fail "test 04 must seed deterministic taskflow metadata instead of asking the Manager model to invent it"
+    fail "test 04 must seed deterministic task metadata instead of asking the Manager model to invent it"
 fi
-if ! grep -Fq 'sync '"'"'${START_FILE}'"'"' to MinIO with filesync push' "${human_intervene_test}" ||
+if ! grep -Fq 'finite_task_sync_instruction "${TEST_WORKER_RUNTIME}" "${START_FILE}"' "${human_intervene_test}" ||
     ! grep -Fq 'minio_wait_for_content "${START_FILE}" "${ORIGINAL_MARKER}" 120' "${human_intervene_test}"; then
-    fail "test 04 must require the start marker in shared storage and bound that dependency to 120 seconds"
+    fail "test 04 must sync the start marker with the selected Worker runtime and bound that dependency to 120 seconds"
 fi
-if ! grep -Fq 'sync '"'"'${RESULT_FILE}'"'"' to MinIO with filesync push' "${human_intervene_test}" ||
+if ! grep -Fq 'finite_task_sync_instruction "${TEST_WORKER_RUNTIME}" "${RESULT_FILE}"' "${human_intervene_test}" ||
     ! grep -Fq 'minio_wait_for_content "${RESULT_FILE}" "${SUPPLEMENT_MARKER}" 120' "${human_intervene_test}"; then
-    fail "test 04 must require the final result in shared storage and bound that dependency to 120 seconds"
+    fail "test 04 must sync the final deliverable with the selected Worker runtime and bound that dependency to 120 seconds"
 fi
-if ! grep -Fq 'submit SUCCESS via taskflow' "${human_intervene_test}" ||
-    ! grep -Fq 'minio_wait_for_content "${TASKFLOW_RESULT}" "STATUS: SUCCESS" 120' "${human_intervene_test}"; then
-    fail "test 04 must wait for Alice to close the finite task before the next test starts"
+if ! grep -Fq 'finite_task_completion_instruction "${TEST_WORKER_RUNTIME}" "${TASK_ID}"' "${human_intervene_test}" ||
+    ! grep -Fq 'minio_wait_for_content "${TASK_RESULT}" "STATUS: SUCCESS" 120' "${human_intervene_test}"; then
+    fail "test 04 must close the finite task through the selected Worker protocol before the next test starts"
 fi
-if ! grep -Fq 'Do not edit result.md directly' "${human_intervene_test}" ||
-    ! grep -Fq '"deliverables":["${RESULT_FILE}"]' "${human_intervene_test}"; then
-    fail "test 04 must require inline taskflow result submission so result.md stays machine-readable"
+if ! grep -Fq '"[\"${RESULT_FILE}\"]"' "${human_intervene_test}"; then
+    fail "test 04 must preserve the structured result deliverable for every Worker runtime"
 fi
 if ! grep -Fq 'wait_for_manager_task_state true 30' "${human_intervene_test}" ||
     ! grep -Fq 'wait_for_manager_task_state false 60' "${human_intervene_test}"; then
@@ -245,15 +272,15 @@ for heartbeat_doc in \
     "${SCRIPT_DIR}/../manager/agent/copaw-manager-agent/HEARTBEAT.md"; do
     if ! grep -Fq 'Never infer finite-task completion from room prose or deliverable presence.' "${heartbeat_doc}" ||
         ! grep -Fq 'result.md starts with `STATUS: SUCCESS` or `STATUS: FAILED`' "${heartbeat_doc}"; then
-        fail "Manager heartbeat must keep finite tasks active until taskflow writes a structured terminal result"
+        fail "Manager heartbeat must keep finite tasks active until the Worker writes a structured terminal result"
     fi
 done
-if ! grep -Fq 'Assign Alice one finite task through taskflow with exact ID ${TASK_ID}' "${heartbeat_test}"; then
-    fail "test 05 must create the heartbeat task through taskflow so its lifecycle can be closed"
+if ! grep -Fq 'Assign Alice one finite task with exact ID ${TASK_ID}' "${heartbeat_test}"; then
+    fail "test 05 must create the heartbeat task with a deterministic ID"
 fi
 if ! grep -Fq 'project_id: "standalone"' "${heartbeat_test}" ||
     ! grep -Fq 'Do not recreate or replace its task metadata' "${heartbeat_test}"; then
-    fail "test 05 must seed deterministic taskflow metadata so the heartbeat observes an in-progress task"
+    fail "test 05 must seed deterministic task metadata so the heartbeat observes an in-progress task"
 fi
 if ! grep -Fq 'minio_wait_for_file "${OUTLINE_FILE}" 120' "${heartbeat_test}"; then
     fail "test 05 must wait for Alice to start the current task before triggering heartbeat"
@@ -280,7 +307,7 @@ fi
 if ! grep -Fq 'wait_for_manager_task_state true 30' "${heartbeat_test}" ||
     ! grep -Fq 'minio_wait_for_content "${TASK_RESULT}" "STATUS: SUCCESS" 120' "${heartbeat_test}" ||
     ! grep -Fq -- '--action complete --task-id "${TASK_ID}"' "${heartbeat_test}"; then
-    fail "test 05 must verify taskflow completion and deterministically clean its fixture state"
+    fail "test 05 must verify structured completion and deterministically clean its fixture state"
 fi
 if ! grep -Fq 'matrix_send_mention_message "${ADMIN_TOKEN}" "${ALICE_ROOM}" "${ALICE_USER}" "${CLOSE_MESSAGE}"' "${heartbeat_test}"; then
     fail "test 05 cleanup must address Alice directly instead of adding another Manager LLM turn"

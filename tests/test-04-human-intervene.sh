@@ -8,6 +8,7 @@ source "${SCRIPT_DIR}/lib/test-helpers.sh"
 source "${SCRIPT_DIR}/lib/matrix-client.sh"
 source "${SCRIPT_DIR}/lib/minio-client.sh"
 source "${SCRIPT_DIR}/lib/agent-metrics.sh"
+source "${SCRIPT_DIR}/lib/finite-task-protocol.sh"
 
 test_setup "04-human-intervene"
 
@@ -51,10 +52,16 @@ TASK_DIR="shared/tasks/${TASK_ID}"
 TASK_SPEC="${TASK_DIR}/spec.md"
 START_FILE="${TASK_DIR}/started.txt"
 RESULT_FILE="${TASK_DIR}/workspace/hello.py"
-TASKFLOW_RESULT="${TASK_DIR}/result.md"
+TASK_RESULT="${TASK_DIR}/result.md"
 ORIGINAL_MARKER="ORIGINAL_REQUIREMENT_${TASK_ID}"
 SUPPLEMENT_MARKER="SUPPLEMENT_REQUIREMENT_${TASK_ID}"
 TASK_FIXTURE_DIR=$(mktemp -d)
+TEST_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-openclaw}"
+TASK_ACCEPTANCE=$(finite_task_acceptance_instruction "${TEST_WORKER_RUNTIME}" "${TASK_ID}")
+START_SYNC=$(finite_task_sync_instruction "${TEST_WORKER_RUNTIME}" "${START_FILE}")
+RESULT_SYNC=$(finite_task_sync_instruction "${TEST_WORKER_RUNTIME}" "${RESULT_FILE}")
+TASK_COMPLETION=$(finite_task_completion_instruction "${TEST_WORKER_RUNTIME}" "${TASK_ID}" \
+    "Implemented the original and supplementary requirements" "[\"${RESULT_FILE}\"]")
 
 minio_setup
 _cleanup_task_artifacts() {
@@ -95,10 +102,10 @@ jq -n --arg task_id "${TASK_ID}" '{
 cat > "${TASK_FIXTURE_DIR}/spec.md" <<EOF
 # Human intervention task ${TASK_ID}
 
-1. Accept this task with taskflow action ack_task and payload {"taskId":"${TASK_ID}"}.
-2. Write exactly '${ORIGINAL_MARKER}' to '${START_FILE}' when starting.
-3. Immediately sync '${START_FILE}' to MinIO with filesync push.
-4. Prepare a Python hello-world script, but do not finalize or submit the task until the Manager relays a supplementary requirement.
+${TASK_ACCEPTANCE}
+Write exactly '${ORIGINAL_MARKER}' to '${START_FILE}' when starting.
+${START_SYNC}
+Prepare a Python hello-world script, but do not finalize or submit the task until the Manager relays a supplementary requirement.
 EOF
 docker cp "${TASK_FIXTURE_DIR}/meta.json" \
     "${TEST_CONTROLLER_CONTAINER:-agentteams-controller}:/tmp/${TASK_ID}-meta.json" >/dev/null
@@ -113,8 +120,8 @@ exec_in_manager rm -f "/tmp/${TASK_ID}-meta.json" "/tmp/${TASK_ID}-spec.md"
 MANAGER_BASELINE_EVENT=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager")
 WORKER_ROOM_BASELINE_EVENT=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${ALICE_ROOM}" "@manager")
 read -r -d '' ORIGINAL_MESSAGE <<EOF || true
-Assign Alice one finite task through taskflow with exact ID ${TASK_ID}.
-A taskflow-compatible meta.json and spec.md already exist under '${TASK_DIR}' in shared storage. Do not recreate or replace its task metadata. Sync and inspect the existing files, register the finite task in state.json, and dispatch the full spec to Alice's worker room. Reply with ${TASK_ID} only after the worker-room message has been sent.
+Assign Alice one finite task with exact ID ${TASK_ID}.
+A structured meta.json and spec.md already exist under '${TASK_DIR}' in shared storage. Do not recreate or replace its task metadata. Sync and inspect the existing files, register the finite task in state.json, and dispatch the full spec to Alice's worker room. Reply with ${TASK_ID} only after the worker-room message has been sent.
 EOF
 matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" "${ORIGINAL_MESSAGE}"
 
@@ -168,11 +175,10 @@ log_section "Send Supplementary Instruction"
 MANAGER_BASELINE_EVENT=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager")
 WORKER_ROOM_BASELINE_EVENT=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${ALICE_ROOM}" "@manager")
 read -r -d '' SUPPLEMENT_MESSAGE <<EOF || true
-Supplement for task ${TASK_ID}: Alice must now finalize '${RESULT_FILE}' so it accepts an optional command-line name and prints 'Hello, <name>!'. The file must contain both marker comments '${ORIGINAL_MARKER}' and '${SUPPLEMENT_MARKER}', then she must sync '${RESULT_FILE}' to MinIO with filesync push and submit SUCCESS via taskflow.
+Supplement for task ${TASK_ID}: Alice must now finalize '${RESULT_FILE}' so it accepts an optional command-line name and prints 'Hello, <name>!'. The file must contain both marker comments '${ORIGINAL_MARKER}' and '${SUPPLEMENT_MARKER}'.
 
-She must invoke taskflow action submit_task with this inline result payload:
-{"taskId":"${TASK_ID}","status":"SUCCESS","summary":"Implemented the original and supplementary requirements","deliverables":["${RESULT_FILE}"],"notes":[]}
-Do not edit result.md directly; taskflow owns and renders that file.
+${RESULT_SYNC}
+${TASK_COMPLETION}
 
 Relay this update to Alice's worker room and visibly @mention exact Matrix ID ${ALICE_MATRIX_ID}. Do not invent or reuse another Matrix domain or port. Reply with ${TASK_ID} only after the worker-room message has been sent.
 EOF
@@ -220,10 +226,10 @@ else
     test_summary
     exit 1
 fi
-if minio_wait_for_content "${TASKFLOW_RESULT}" "STATUS: SUCCESS" 120; then
-    log_pass "Alice closed the finite task through taskflow"
+if minio_wait_for_content "${TASK_RESULT}" "STATUS: SUCCESS" 120; then
+    log_pass "Alice closed the finite task with a structured result"
 else
-    log_fail "Alice did not submit a successful taskflow result within 120s: ${TASKFLOW_RESULT}"
+    log_fail "Alice did not submit a successful structured result within 120s: ${TASK_RESULT}"
     test_teardown "04-human-intervene"
     test_summary
     exit 1

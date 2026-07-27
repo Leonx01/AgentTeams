@@ -14,7 +14,7 @@
    ```bash
    mkdir -p /root/agentteams-fs/shared/tasks/{task-id}
    ```
-   Write `meta.json` using the taskflow-compatible schema:
+   Write `meta.json` using the structured finite-task schema:
    ```json
    {
      "task_id": "{task-id}",
@@ -36,9 +36,9 @@
 
 4. **MANDATORY — Register in state.json before dispatching** (this step is NOT optional, even for coordination, research, or management tasks):
 
-   a) Get the Worker's `room_id`:
+   a) Get the Worker runtime together with its `room_id`:
    ```bash
-   agt get workers -o json
+   agt get workers {worker} -o json
    ```
 
    b) Add the task before sending any Matrix assignment:
@@ -54,30 +54,39 @@
 
    **HARD RULE:** Do **not** put @worker task-assignment text in your admin DM reply. Workers cannot read the admin DM. The admin DM reply must only confirm to the admin (for example: assigned `{task-id}` to `{worker}`). The full dispatch with @mention MUST go to the Worker's Matrix room using the protocol below.
 
-   a) Get your Manager runtime from the controller (source of truth):
+   a) Compose the body the Worker must receive (full Matrix @mention so they wake). Select the completion protocol from the Worker's `runtime` returned in step 4(a):
+
+   - For a **CoPaw Worker**, use taskflow:
+     ```
+     @{worker}:{domain} New task [{task-id}]: {title}. Use taskflow to accept the task, read shared/tasks/{task-id}/spec.md, and submit your structured result through taskflow. @mention me when complete.
+     ```
+
+   - For every **non-CoPaw Worker**, use its built-in file-sync procedure:
+     ```
+     @{worker}:{domain} New task [{task-id}]: {title}. Sync and read shared/tasks/{task-id}/spec.md, then write the structured terminal result to shared/tasks/{task-id}/result.md and push the task directory with your runtime's built-in file-sync procedure. Do not invoke taskflow. @mention me when complete.
+     ```
+
+   Do not tell a non-CoPaw Worker to invoke `taskflow`; that tool is provided only by the CoPaw Worker runtime.
+
+   b) Get your Manager runtime from the controller (source of truth):
    ```bash
    agt get managers -o json | jq -r '.managers[0].runtime'
    ```
 
-   b) Compose the body the Worker must receive (full Matrix @mention so they wake):
-   ```
-   @{worker}:{domain} New task [{task-id}]: {title}. Use taskflow to accept the task, read shared/tasks/{task-id}/spec.md, and submit your structured result through taskflow. @mention me when complete.
-   ```
+   c) Send the selected body to the Worker's room, branching on the Manager runtime from step (b):
 
-   c) Send that body to the Worker's room, branching on runtime from step (a):
+   - **`openclaw` Manager** — use the **message** tool with `channel=matrix` and `target=room:<ROOM_ID>` (the literal `room_id` value from step 4(a), prefixed with `room:`). Do not rely on the implicit current room when you are in an admin DM.
 
-   - **`openclaw`** — use the **message** tool with `channel=matrix` and `target=room:<ROOM_ID>` (the literal `room_id` value from step (a), prefixed with `room:`). Do not rely on the implicit current room when you are in an admin DM.
-
-   - **`copaw`** — use the shell tool:
+   - **`copaw` Manager** — use the shell tool and place the selected body in `--text`:
    ```bash
    copaw channels send \
      --agent-id default \
      --channel matrix \
      --target-session "<ROOM_ID>" \
      --target-user "@{worker}:${AGENTTEAMS_MATRIX_DOMAIN}" \
-     --text '@{worker}:{domain} New task [{task-id}]: {title}. Use taskflow to accept the task, read shared/tasks/{task-id}/spec.md, and submit your structured result through taskflow. @mention me when complete.'
+     --text '<SELECTED BODY FROM STEP a>'
    ```
-   (Quote `--text` so the shell preserves spaces and @mentions.)
+   Quote `--text` so the shell preserves spaces and @mentions.
 
 ## On completion
 
@@ -113,10 +122,10 @@
 
 ```
 shared/tasks/{task-id}/
-├── meta.json     # Taskflow state shared by Manager and Worker
+├── meta.json     # Structured task state shared by Manager and Worker
 ├── spec.md       # Manager-written
 ├── base/         # Manager-maintained reference files (Workers must not overwrite)
 ├── plan.md       # Worker-written execution plan
-├── result.md     # Taskflow-written structured final result
+├── result.md     # Structured final result; taskflow-owned for CoPaw Workers
 └── *             # Intermediate artifacts
 ```

@@ -57,7 +57,7 @@ Iterate over entries in `active_tasks` with `"type": "finite"`:
 - If the Worker has not responded (no response for more than one heartbeat cycle), flag the anomaly in the Room and notify the human admin (see Step 7)
 - Never infer finite-task completion from room prose or deliverable presence.
 - Before any terminal transition, verify that `/root/agentteams-fs/shared/tasks/{task-id}/result.md` exists and that result.md starts with `STATUS: SUCCESS` or `STATUS: FAILED`.
-- If the Worker claims completion without that structured taskflow result, ask them to submit through taskflow and keep the entry active. Only after the terminal result exists may you update meta.json and remove the entry from `active_tasks`:
+- If the Worker claims completion without that structured terminal result, keep the entry active. Ask a CoPaw Worker to submit through taskflow; ask every other Worker to write and push `result.md` with its built-in file-sync procedure. Only after the terminal result exists may you update meta.json and remove the entry from `active_tasks`:
   ```bash
   bash /opt/agentteams/agent/skills/task-management/scripts/manage-state.sh --action complete --task-id {task-id}
   ```

@@ -8,6 +8,7 @@ source "${SCRIPT_DIR}/lib/test-helpers.sh"
 source "${SCRIPT_DIR}/lib/matrix-client.sh"
 source "${SCRIPT_DIR}/lib/minio-client.sh"
 source "${SCRIPT_DIR}/lib/agent-metrics.sh"
+source "${SCRIPT_DIR}/lib/finite-task-protocol.sh"
 
 test_setup "05-heartbeat"
 
@@ -53,6 +54,11 @@ TASK_SPEC="${TASK_DIR}/spec.md"
 TASK_RESULT="${TASK_DIR}/result.md"
 OUTLINE_FILE="${TASK_DIR}/workspace/webassembly-outline.md"
 TASK_FIXTURE_DIR=$(mktemp -d)
+TEST_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-openclaw}"
+TASK_ACCEPTANCE=$(finite_task_acceptance_instruction "${TEST_WORKER_RUNTIME}" "${TASK_ID}")
+OUTLINE_SYNC=$(finite_task_sync_instruction "${TEST_WORKER_RUNTIME}" "${OUTLINE_FILE}")
+TASK_COMPLETION=$(finite_task_completion_instruction "${TEST_WORKER_RUNTIME}" "${TASK_ID}" \
+    "Reported heartbeat progress for the active task" "[\"${OUTLINE_FILE}\"]")
 
 minio_setup
 _cleanup_heartbeat_test() {
@@ -99,10 +105,11 @@ jq -n --arg task_id "${TASK_ID}" '{
 cat > "${TASK_FIXTURE_DIR}/spec.md" <<EOF
 # Heartbeat progress task ${TASK_ID}
 
-1. Accept this task with taskflow action ack_task and payload {"taskId":"${TASK_ID}"}.
-2. Write a short WebAssembly outline to '${OUTLINE_FILE}' and sync it to MinIO with filesync push.
-3. Keep the task in progress. Do not submit it until the Manager explicitly asks you to close it.
-4. When the Manager asks for status or progress on this task, reply exactly 'HEARTBEAT_PROGRESS ${TASK_ID}'.
+${TASK_ACCEPTANCE}
+Write a short WebAssembly outline to '${OUTLINE_FILE}'.
+${OUTLINE_SYNC}
+Keep the task in progress. Do not submit it until the Manager explicitly asks you to close it.
+When the Manager asks for status or progress on this task, reply exactly 'HEARTBEAT_PROGRESS ${TASK_ID}'.
 EOF
 docker cp "${TASK_FIXTURE_DIR}/meta.json" \
     "${TEST_CONTROLLER_CONTAINER:-agentteams-controller}:/tmp/${TASK_ID}-meta.json" >/dev/null
@@ -116,8 +123,8 @@ exec_in_manager rm -f "/tmp/${TASK_ID}-meta.json" "/tmp/${TASK_ID}-spec.md"
 
 MANAGER_BASELINE_EVENT=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager")
 read -r -d '' ASSIGN_MESSAGE <<EOF || true
-Assign Alice one finite task through taskflow with exact ID ${TASK_ID}.
-A taskflow-compatible meta.json and spec.md already exist under '${TASK_DIR}' in shared storage. Do not recreate or replace its task metadata. Sync and inspect the existing files, register the finite task in state.json, dispatch the full spec to Alice's worker room, then reply with ${TASK_ID}.
+Assign Alice one finite task with exact ID ${TASK_ID}.
+A structured meta.json and spec.md already exist under '${TASK_DIR}' in shared storage. Do not recreate or replace its task metadata. Sync and inspect the existing files, register the finite task in state.json, dispatch the full spec to Alice's worker room, then reply with ${TASK_ID}.
 EOF
 matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" "${ASSIGN_MESSAGE}"
 
@@ -262,13 +269,12 @@ fi
 # tests 03/04, while this test is specifically about heartbeat inquiry.
 read -r -d '' CLOSE_MESSAGE <<EOF || true
 Heartbeat test ${TASK_ID} is complete.
-Submit the task with taskflow action submit_task and this inline result payload:
-{"taskId":"${TASK_ID}","status":"SUCCESS","summary":"Reported heartbeat progress for the active task","deliverables":["${OUTLINE_FILE}"],"notes":[]}
-Do not edit result.md directly. @mention Manager after taskflow confirms success.
+${TASK_COMPLETION}
+@mention Manager after the structured result is synced successfully.
 EOF
 matrix_send_mention_message "${ADMIN_TOKEN}" "${ALICE_ROOM}" "${ALICE_USER}" "${CLOSE_MESSAGE}"
 if minio_wait_for_content "${TASK_RESULT}" "STATUS: SUCCESS" 120; then
-    log_pass "Alice closed the heartbeat task through taskflow"
+    log_pass "Alice closed the heartbeat task with a structured result"
 else
     log_fail "Alice did not submit ${TASK_RESULT} within 120s"
     test_teardown "05-heartbeat"

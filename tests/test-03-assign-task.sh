@@ -8,6 +8,7 @@ source "${SCRIPT_DIR}/lib/test-helpers.sh"
 source "${SCRIPT_DIR}/lib/matrix-client.sh"
 source "${SCRIPT_DIR}/lib/minio-client.sh"
 source "${SCRIPT_DIR}/lib/agent-metrics.sh"
+source "${SCRIPT_DIR}/lib/finite-task-protocol.sh"
 
 test_setup "03-assign-task"
 
@@ -45,6 +46,10 @@ TASK_SPEC="${TASK_DIR}/spec.md"
 TASK_RESULT="${TASK_DIR}/result.md"
 SPEC_MARKER="TASK_SPEC_${TASK_ID}"
 TASK_FIXTURE_DIR=$(mktemp -d)
+TEST_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-openclaw}"
+TASK_ACCEPTANCE=$(finite_task_acceptance_instruction "${TEST_WORKER_RUNTIME}" "${TASK_ID}")
+TASK_COMPLETION=$(finite_task_completion_instruction "${TEST_WORKER_RUNTIME}" "${TASK_ID}" \
+    "Processed ${SPEC_MARKER}" '[]')
 
 minio_setup
 _cleanup_task_artifacts() {
@@ -87,10 +92,8 @@ cat > "${TASK_FIXTURE_DIR}/spec.md" <<EOF
 
 ${SPEC_MARKER}
 
-1. Accept this task with taskflow action ack_task and payload {"taskId":"${TASK_ID}"}.
-2. Submit the result with taskflow action submit_task and this inline payload:
-   {"taskId":"${TASK_ID}","status":"SUCCESS","summary":"Processed ${SPEC_MARKER}","deliverables":[],"notes":[]}
-3. Do not edit result.md directly because taskflow owns and renders that file.
+${TASK_ACCEPTANCE}
+${TASK_COMPLETION}
 EOF
 docker cp "${TASK_FIXTURE_DIR}/meta.json" \
     "${TEST_CONTROLLER_CONTAINER:-agentteams-controller}:/tmp/${TASK_ID}-meta.json" >/dev/null
@@ -105,7 +108,7 @@ exec_in_manager rm -f "/tmp/${TASK_ID}-meta.json" "/tmp/${TASK_ID}-spec.md"
 MANAGER_BASELINE_EVENT=$(matrix_latest_reply_event "${ADMIN_TOKEN}" "${DM_ROOM}" "@manager")
 read -r -d '' ASSIGN_MESSAGE <<EOF || true
 Assign Alice this bounded task with ID ${TASK_ID}.
-A taskflow-compatible meta.json and spec.md already exist under '${TASK_DIR}' in shared storage. Do not recreate or replace its task metadata. Sync and inspect the existing files. Register it with manage-state.sh before sending any Matrix message to Alice. Only after the add-finite command succeeds, dispatch the full spec to Alice's worker room, then reply with ${TASK_ID}.
+A structured meta.json and spec.md already exist under '${TASK_DIR}' in shared storage. Do not recreate or replace its task metadata. Sync and inspect the existing files. Register it with manage-state.sh before sending any Matrix message to Alice. Only after the add-finite command succeeds, dispatch the full spec to Alice's worker room, then reply with ${TASK_ID}.
 EOF
 matrix_send_message "${ADMIN_TOKEN}" "${DM_ROOM}" "${ASSIGN_MESSAGE}"
 
@@ -151,7 +154,7 @@ if minio_wait_for_content "${TASK_RESULT}" "STATUS: SUCCESS" 120; then
     assert_contains "${RESULT_CONTENT}" "STATUS: SUCCESS" \
         "Alice submitted a successful result for the correlated task"
     assert_contains "${RESULT_CONTENT}" "SUMMARY:" \
-        "Alice submitted a structured taskflow result"
+        "Alice submitted a structured terminal result"
 else
     log_fail "Alice did not submit a successful result within 120s: ${TASK_RESULT}"
     test_teardown "03-assign-task"
