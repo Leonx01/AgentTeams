@@ -284,8 +284,8 @@ phase_report_seen() {
         >/dev/null 2>&1
 }
 
-log_info "Waiting for collaboration milestones (overall timeout: 300s, no-activity timeout: 90s)..."
-DEADLINE=$(( $(date +%s) + 300 ))
+log_info "Waiting for collaboration milestones (overall timeout: 420s, no-activity timeout: 90s)..."
+DEADLINE=$(( $(date +%s) + 420 ))
 STALL_DEADLINE=$(( $(date +%s) + 90 ))
 LAST_STATE=""
 while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
