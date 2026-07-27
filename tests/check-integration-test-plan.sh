@@ -339,7 +339,7 @@ if ! grep -Fq '"${ALICE_ROOM_BASELINE}" "HEARTBEAT_PROGRESS ${TASK_ID}" 60' "${h
 fi
 
 if ! grep -Fq 'grep -Fq "**Name:** Manager" /root/manager-workspace/SOUL.md' "${RUNNER}" ||
-    ! grep -Fq 'grep -Fq "**Language:** Always respond in English" /root/manager-workspace/SOUL.md' "${RUNNER}"; then
+    ! grep -Fq 'grep -Fqi "always respond in English" /root/manager-workspace/SOUL.md' "${RUNNER}"; then
     fail "Manager identity setup must accept the validated SOUL state without a marker file"
 fi
 

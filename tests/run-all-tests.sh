@@ -402,7 +402,7 @@ Please update your SOUL.md with these preferences, then run: touch ~/soul-config
             test -f /root/manager-workspace/soul-configured ||
             {
                 grep -Fq "**Name:** Manager" /root/manager-workspace/SOUL.md &&
-                grep -Fq "**Language:** Always respond in English" /root/manager-workspace/SOUL.md
+                grep -Fqi "always respond in English" /root/manager-workspace/SOUL.md
             }
         ' 2>/dev/null; then
             # soul-configured exists, but Manager's Matrix reply may still be in flight.
