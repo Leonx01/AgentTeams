@@ -210,7 +210,7 @@ def _legacy_configure_qwenpaw_runtime_uses_workspace_teams_prompt(
     workspace = tmp_path / "agents" / "worker-a" / ".qwenpaw" / "workspaces" / "default"
     assert saved.workspace_dir == str(workspace)
     assert saved.approval_level == "AUTO"
-    assert saved.system_prompt_files == ["AGENTS.md", "SOUL.md", "TEAMS.md"]
+    assert saved.system_prompt_files == ["AGENTS.md", "SOUL.md", "TEAMS.md", "IDENTITY.md"]
     assert not any("shared" in prompt for prompt in saved.system_prompt_files)
     assert saved.running.shell_command_executable == "custom-shell"
 
@@ -993,6 +993,7 @@ async def test_plugin_prepare_failure_marks_worker_unready(
 async def test_desired_state_is_not_applied_before_qwenpaw_api_is_ready(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     config = _config(tmp_path)
     _runtime_yaml(config.runtime_config_path)
@@ -1002,9 +1003,10 @@ async def test_desired_state_is_not_applied_before_qwenpaw_api_is_ready(
     monkeypatch.setattr("qwenpaw_worker.worker.Worker._prepare_default_plugins", lambda _self: None)
 
     def fail_update(_self, runtime_config=None, force=False, reapply_adapter=True):
-        raise RuntimeError("agent package failed")
+        raise RuntimeError("fetch oss agent package failed: Access Denied secret-token-value")
 
     monkeypatch.setattr("qwenpaw_worker.update.RuntimeUpdater.apply_once", fail_update)
+    caplog.set_level(logging.INFO, logger="qwenpaw_worker.worker")
 
     worker = Worker(config)
 

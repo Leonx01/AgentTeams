@@ -37,6 +37,7 @@ def test_register_uses_qwenpaw_2_public_extension_points(monkeypatch):
         "register_skill_provider",
         "register_middleware",
         "trace",
+        "register_http_router",
     ]
 
 

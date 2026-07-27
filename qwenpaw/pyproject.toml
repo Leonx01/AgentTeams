@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "AgentTeams Worker runtime based on QwenPaw"
 readme = "README.md"
 license = { text = "Apache-2.0" }
-requires-python = ">=3.10"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "qwenpaw==2.0.1",
     "markdown-it-py>=3.0",
