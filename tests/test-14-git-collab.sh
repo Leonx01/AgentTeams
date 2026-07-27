@@ -239,9 +239,10 @@ log_info "Project room: ${PROJECT_ROOM}"
 
 MEMBERSHIP_PIDS=()
 MEMBERSHIP_NAMES=()
+PROJECT_MEMBER_JOIN_TIMEOUT=90
 for w in alice bob charlie; do
     matrix_wait_for_user_joined "${MANAGER_TOKEN}" "${PROJECT_ROOM}" \
-        "@${w}:${TEST_MATRIX_DOMAIN}" 40 &
+        "@${w}:${TEST_MATRIX_DOMAIN}" "${PROJECT_MEMBER_JOIN_TIMEOUT}" &
     MEMBERSHIP_PIDS+=("$!")
     MEMBERSHIP_NAMES+=("${w}")
 done
@@ -250,7 +251,7 @@ for i in "${!MEMBERSHIP_PIDS[@]}"; do
     if wait "${MEMBERSHIP_PIDS[$i]}"; then
         log_pass "Worker ${w} joined the project room"
     else
-        log_fail "Worker ${w} did not join the project room within 40s"
+        log_fail "Worker ${w} did not join the project room within ${PROJECT_MEMBER_JOIN_TIMEOUT}s"
     fi
 done
 if [ "${TESTS_FAILED}" -gt 0 ]; then

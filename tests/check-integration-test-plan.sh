@@ -340,6 +340,10 @@ fi
 if ! grep -Fq 'MEMBERSHIP_PIDS+=("$!")' "${git_collab_test}"; then
     fail "test 14 must verify project-room memberships concurrently"
 fi
+if ! grep -Fq 'PROJECT_MEMBER_JOIN_TIMEOUT=90' "${git_collab_test}" ||
+    ! grep -Fq '"@${w}:${TEST_MATRIX_DOMAIN}" "${PROJECT_MEMBER_JOIN_TIMEOUT}" &' "${git_collab_test}"; then
+    fail "test 14 must allow bounded startup jitter when three Workers join the project room concurrently"
+fi
 if ! grep -Fq 'overall timeout: 300s, no-activity timeout: 90s' "${git_collab_test}" ||
     ! grep -Fq 'PROJECT_MESSAGES=$(matrix_read_messages' "${git_collab_test}" ||
     ! grep -Fq 'PROJECT_ACTIVITY=$(echo "${PROJECT_MESSAGES}"' "${git_collab_test}"; then
