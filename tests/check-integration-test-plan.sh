@@ -211,7 +211,8 @@ source "${finite_task_protocol}"
 copaw_acceptance=$(finite_task_acceptance_instruction copaw task-check)
 hermes_acceptance=$(finite_task_acceptance_instruction hermes task-check)
 copaw_completion=$(finite_task_completion_instruction copaw task-check summary '[]')
-hermes_completion=$(finite_task_completion_instruction hermes task-check summary '[]')
+hermes_completion=$(finite_task_completion_instruction hermes task-check summary '[]' \
+    '!worker-room:matrix.test' '@manager:matrix.test')
 openclaw_completion=$(finite_task_completion_instruction openclaw task-check summary '[]' \
     '!worker-room:matrix.test' '@manager:matrix.test')
 if ! printf '%s' "${copaw_acceptance}" | grep -Fq 'taskflow action ack_task' ||
@@ -220,6 +221,7 @@ if ! printf '%s' "${copaw_acceptance}" | grep -Fq 'taskflow action ack_task' ||
     ! printf '%s' "${copaw_completion}" | grep -Fq 'taskflow action submit_task' ||
     printf '%s' "${hermes_completion}" | grep -Fq 'taskflow action submit_task' ||
     ! printf '%s' "${hermes_completion}" | grep -Fq 'STATUS: SUCCESS' ||
+    ! printf '%s' "${hermes_completion}" | grep -Fq '@manager:matrix.test TASK_COMPLETED: task-check' ||
     ! printf '%s' "${openclaw_completion}" | grep -Fq 'message tool with channel=matrix and target=room:!worker-room:matrix.test' ||
     ! printf '%s' "${openclaw_completion}" | grep -Fq '@manager:matrix.test TASK_COMPLETED: task-check'; then
     fail "finite-task protocol helper selected an unsupported Worker lifecycle"

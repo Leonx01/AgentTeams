@@ -63,6 +63,21 @@ finite_task_completion_instruction() {
                     "Send it once through the message tool; do not rely on a streamed final reply to notify the coordinator."
             fi
             ;;
+        hermes)
+            printf '%s\n' \
+                "Write shared/tasks/${task_id}/result.md with these exact protocol lines:" \
+                "STATUS: SUCCESS" \
+                "SUMMARY: ${summary}" \
+                "DELIVERABLES: ${deliverables}" \
+                "Then sync the whole shared/tasks/${task_id}/ directory to MinIO using your runtime-specific file-sync procedure." \
+                "Do not invoke taskflow; it is only available to CoPaw Workers."
+            if [ -n "${coordinator}" ]; then
+                printf '%s\n' \
+                    "After the sync succeeds, finish your Matrix response with this exact completion notification so the coordinator is woken:" \
+                    "${coordinator} TASK_COMPLETED: ${task_id} - ${summary}" \
+                    "Include the full Matrix ID exactly once; do not finish with an unmentioned summary."
+            fi
+            ;;
         *)
             printf '%s\n' \
                 "Write shared/tasks/${task_id}/result.md with these exact protocol lines:" \

@@ -6,6 +6,7 @@ Record image-affecting changes to `manager/`, `worker/`, `copaw/`, `hermes/`, `o
 
 **Bug Fixes**
 
+- **CoPaw Manager Worker allowlist reload**: Keep the OpenClaw-to-CoPaw config watcher alive across transient bridge failures and apply new Worker Matrix allowlist entries promptly. ([pending](https://github.com/agentscope-ai/AgentTeams/pull/1083))
 - **Runtime-aware finite-task completion**: Keep CoPaw Workers on taskflow while directing Hermes and OpenClaw Workers to write and sync the same structured terminal result through their supported file-sync workflow. ([67c43fe](https://github.com/agentscope-ai/AgentTeams/commit/67c43fe))
 - **Deterministic integration regression**: Run controller-only cases alongside Manager scenarios, stop on the first failure, correlate Matrix and taskflow events exactly, and wait for generated Team and heartbeat state without reducing scenario coverage. ([8b34c46](https://github.com/agentscope-ai/AgentTeams/commit/8b34c46))
 - **Team runtime configuration convergence**: Propagate Team storage scope through Worker credential refreshes, wait for runtime-specific configuration, and materialize CoPaw prompts, skills, and runtime config before startup. ([8b34c46](https://github.com/agentscope-ai/AgentTeams/commit/8b34c46))

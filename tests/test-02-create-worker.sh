@@ -162,6 +162,28 @@ ALICE_RUNTIME=$(echo "${ALICE_WORKER_JSON}" | jq -r '.runtime // empty')
 assert_eq "${TEST_WORKER_RUNTIME}" "${ALICE_RUNTIME}" \
     "Worker Alice runtime matches test matrix (got: '${ALICE_RUNTIME}', want: '${TEST_WORKER_RUNTIME}')"
 
+if [ "${AGENTTEAMS_MANAGER_RUNTIME:-openclaw}" = "copaw" ]; then
+    ALICE_MATRIX_ID="@alice:${TEST_MATRIX_DOMAIN}"
+    MANAGER_ALLOW_READY=false
+    for _ in $(seq 1 30); do
+        if exec_in_agent jq -e --arg user "${ALICE_MATRIX_ID}" \
+            '(.channels.matrix.group_allow_from // []) | index($user) != null' \
+            /root/manager-workspace/.copaw/workspaces/default/agent.json >/dev/null 2>&1; then
+            MANAGER_ALLOW_READY=true
+            break
+        fi
+        sleep 1
+    done
+    if [ "${MANAGER_ALLOW_READY}" = "true" ]; then
+        log_pass "CoPaw Manager reloaded Alice into its Matrix allowlist"
+    else
+        log_fail "CoPaw Manager did not reload Alice into its Matrix allowlist within 30s"
+        test_teardown "02-create-worker"
+        test_summary
+        exit 1
+    fi
+fi
+
 log_section "Start Worker Container"
 
 # Extract install parameters from Manager's reply and start Worker

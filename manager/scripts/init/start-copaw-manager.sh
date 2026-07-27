@@ -205,22 +205,25 @@ fi
 # 9. Background: watch openclaw.json for changes and re-bridge
 # ============================================================
 (
+    # Keep retrying after a transient bridge failure even if errexit was
+    # inherited from the parent startup shell.
+    set +e
     _prev_hash=$(md5sum "${OPENCLAW_JSON}" 2>/dev/null | awk '{print $1}')
     while true; do
-        sleep 60
+        sleep 10
         _curr_hash=$(md5sum "${OPENCLAW_JSON}" 2>/dev/null | awk '{print $1}')
         if [ -n "${_curr_hash}" ] && [ "${_curr_hash}" != "${_prev_hash}" ]; then
             log "openclaw.json changed, re-bridging..."
-            _bridge_out=$(PYTHONPATH="/opt/agentteams/copaw/src:${PYTHONPATH:-}" \
+            if _bridge_out=$(PYTHONPATH="/opt/agentteams/copaw/src:${PYTHONPATH:-}" \
                 python3 -m copaw_worker.bridge \
                     --profile manager \
                     --openclaw-json "${OPENCLAW_JSON}" \
-                    --working-dir "${COPAW_WORKING_DIR}" 2>&1)
-            if [ $? -eq 0 ]; then
+                    --working-dir "${COPAW_WORKING_DIR}" 2>&1); then
                 _prev_hash="${_curr_hash}"
                 log "Re-bridge complete"
             else
-                log "Re-bridge failed, will retry on next cycle: ${_bridge_out}"
+                _bridge_status=$?
+                log "Re-bridge failed (exit ${_bridge_status}), will retry on next cycle: ${_bridge_out}"
             fi
         fi
     done
