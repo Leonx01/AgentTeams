@@ -6,6 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER="${SCRIPT_DIR}/run-all-tests.sh"
 MAKEFILE="${SCRIPT_DIR}/../Makefile"
+WORKFLOW="${SCRIPT_DIR}/../.github/workflows/test-integration.yml"
 # shellcheck source=lib/gateway-auth.sh
 source "${SCRIPT_DIR}/lib/gateway-auth.sh"
 
@@ -13,6 +14,15 @@ fail() {
     echo "FAIL: $*" >&2
     exit 1
 }
+
+build_image_job=$(sed -n '/^  build-images:/,/^  integration-tests:/p' "${WORKFLOW}")
+integration_test_job=$(sed -n '/^  integration-tests:/,$p' "${WORKFLOW}")
+if ! printf '%s\n' "${build_image_job}" | grep -Fq 'fail-fast: false'; then
+    fail "image builds must finish their matrix so transient failures do not discard reusable artifacts"
+fi
+if ! printf '%s\n' "${integration_test_job}" | grep -Fq 'fail-fast: true'; then
+    fail "integration test shards must still stop promptly after a real test failure"
+fi
 
 assert_eq() {
     local expected="$1"
