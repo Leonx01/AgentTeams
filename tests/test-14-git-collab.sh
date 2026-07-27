@@ -154,6 +154,7 @@ Create a shared project room named EXACTLY '${PROJECT_NAME}' with alice, bob, ch
 The integration coordinator will send the phase instructions in that room after verifying membership. Do not create task specs, clone the repository, or assign phases yourself. Stay in the room and observe the reports. After charlie reports PHASE4_DONE, post exactly 'GIT_COLLAB_COMPLETE ${TEST_RUN_ID}' and @mention the human admin."
 
 PHASE1_MESSAGE="Phase 1 for collaboration ${TEST_RUN_ID}. Use these instructions directly; do not wait for file sync.
+- This phase is assigned only to alice. If you are not alice, do not perform it.
 - Clone ${GIT_REPO_URL}
 - Create branch '${FEATURE_BRANCH}' from main
 - Create doc/proposal.md with exactly:
@@ -165,33 +166,24 @@ PHASE1_MESSAGE="Phase 1 for collaboration ${TEST_RUN_ID}. Use these instructions
   ## Goals
   - Faster delivery
   - Better quality
-- Commit 'feat: add proposal', push '${FEATURE_BRANCH}', and report PHASE1_DONE."
+- Commit 'feat: add proposal', push '${FEATURE_BRANCH}', and report PHASE1_DONE ${TEST_RUN_ID}."
 
 PHASE2_MESSAGE="Phase 2 for collaboration ${TEST_RUN_ID}. Alice's branch is ready. Use these instructions directly; do not wait for file sync.
+- This phase is assigned only to bob. If you are not bob, do not perform it.
 - Clone ${GIT_REPO_URL} and check out '${FEATURE_BRANCH}'
 - Create '${REVIEW_BRANCH}' from '${FEATURE_BRANCH}'
 - Create reviews/proposal-review.md with exactly:
   # Review
 
   The proposal looks good. Please add a ## Summary section at the top that briefly describes the project in one sentence.
-- Commit 'review: request summary section', push '${REVIEW_BRANCH}', and report REVISION_NEEDED."
+- Commit 'review: request summary section', push '${REVIEW_BRANCH}', and report REVISION_NEEDED ${TEST_RUN_ID}."
 
 PHASE3_MESSAGE="Phase 3 for collaboration ${TEST_RUN_ID}. Bob's review branch is ready. Use these instructions directly; do not wait for file sync.
+- This phase is assigned only to alice. If you are not alice, do not perform it.
 - Work on '${FEATURE_BRANCH}'
 - Read reviews/proposal-review.md from '${REVIEW_BRANCH}'
 - Add a '## Summary' section immediately after the '# Project Proposal' title in doc/proposal.md, with one sentence describing the project
-- Commit 'fix: add summary section per review', push '${FEATURE_BRANCH}', and report PHASE3_DONE."
-
-PHASE4_MESSAGE="Phase 4 for collaboration ${TEST_RUN_ID}. Alice's revision is ready. Use these instructions directly; do not wait for file sync.
-- Clone ${GIT_REPO_URL}
-- Create '${TEST_BRANCH}' from '${FEATURE_BRANCH}'
-- Create verify/checklist.md with exactly:
-  # Verification
-
-  - [x] Summary section exists
-  - [x] Goals section exists
-  - [x] Review request addressed
-- Commit 'verify: proposal review checklist', push '${TEST_BRANCH}', and report PHASE4_DONE."
+- Commit 'fix: add summary section per review', push '${FEATURE_BRANCH}', and report PHASE3_DONE ${TEST_RUN_ID}."
 
 # Snapshot before first LLM interaction
 METRICS_BASELINE=$(snapshot_baseline "alice" "bob" "charlie")
@@ -275,6 +267,21 @@ PHASE2_SENT=0
 PHASE3_SENT=0
 PHASE4_SENT=0
 PHASE3_BASE_SHA=""
+PHASE4_BASE_SHA=""
+
+phase_report_seen() {
+    local sender="$1"
+    local marker="$2"
+
+    echo "${PROJECT_MESSAGES}" | jq -e \
+        --arg sender "${sender}" \
+        --arg marker "${marker}" \
+        'any(.chunk[]?;
+          (.type == "m.room.message") and
+          (.sender == $sender) and
+          ((.content.body // "") | contains($marker)))' \
+        >/dev/null 2>&1
+}
 
 log_info "Waiting for collaboration milestones (overall timeout: 300s, no-activity timeout: 90s)..."
 DEADLINE=$(( $(date +%s) + 300 ))
@@ -292,30 +299,60 @@ while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
         FEATURE_COMMITS=$(docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
             rev-list --count "main..${FEATURE_BRANCH}" 2>/dev/null || echo 0)
     fi
-    PROJECT_ACTIVITY=$(matrix_read_messages "${MANAGER_TOKEN}" "${PROJECT_ROOM}" 10 2>/dev/null | \
+    PROJECT_MESSAGES=$(matrix_read_messages "${MANAGER_TOKEN}" "${PROJECT_ROOM}" 50 2>/dev/null || true)
+    PROJECT_ACTIVITY=$(echo "${PROJECT_MESSAGES}" | \
         jq -r '[.chunk[] | select(.type == "m.room.message") | .event_id] | first // ""' \
         2>/dev/null || true)
-    STATE="${FEATURE_SHA}:${REVIEW_SHA}:${FEATURE_COMMITS}:${TEST_SHA}:${PROJECT_ACTIVITY}"
+    PHASE1_DONE_SEEN=0
+    PHASE2_DONE_SEEN=0
+    PHASE3_DONE_SEEN=0
+    PHASE4_DONE_SEEN=0
+    phase_report_seen "@alice:${TEST_MATRIX_DOMAIN}" "PHASE1_DONE ${TEST_RUN_ID}" &&
+        PHASE1_DONE_SEEN=1
+    phase_report_seen "@bob:${TEST_MATRIX_DOMAIN}" "REVISION_NEEDED ${TEST_RUN_ID}" &&
+        PHASE2_DONE_SEEN=1
+    phase_report_seen "@alice:${TEST_MATRIX_DOMAIN}" "PHASE3_DONE ${TEST_RUN_ID}" &&
+        PHASE3_DONE_SEEN=1
+    phase_report_seen "@charlie:${TEST_MATRIX_DOMAIN}" "PHASE4_DONE ${TEST_RUN_ID}" &&
+        PHASE4_DONE_SEEN=1
+    STATE="${FEATURE_SHA}:${REVIEW_SHA}:${FEATURE_COMMITS}:${TEST_SHA}:${PROJECT_ACTIVITY}:${PHASE1_DONE_SEEN}:${PHASE2_DONE_SEEN}:${PHASE3_DONE_SEEN}:${PHASE4_DONE_SEEN}"
 
-    if [ -n "${FEATURE_SHA}" ] && [ "${PHASE2_SENT}" -eq 0 ]; then
+    if [ -n "${FEATURE_SHA}" ] && [ "${PHASE1_DONE_SEEN}" -eq 1 ] &&
+        [ "${PHASE2_SENT}" -eq 0 ]; then
         matrix_send_mention_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" \
             "@bob:${TEST_MATRIX_DOMAIN}" "${PHASE2_MESSAGE}" >/dev/null
         PHASE2_SENT=1
     fi
-    if [ -n "${REVIEW_SHA}" ] && [ "${PHASE3_SENT}" -eq 0 ]; then
+    if [ -n "${REVIEW_SHA}" ] && [ "${PHASE2_DONE_SEEN}" -eq 1 ] &&
+        [ "${PHASE3_SENT}" -eq 0 ]; then
         PHASE3_BASE_SHA="${FEATURE_SHA}"
         matrix_send_mention_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" \
             "@alice:${TEST_MATRIX_DOMAIN}" "${PHASE3_MESSAGE}" >/dev/null
         PHASE3_SENT=1
     fi
     if [ "${PHASE3_SENT}" -eq 1 ] && [ "${PHASE4_SENT}" -eq 0 ] &&
-        [ -n "${FEATURE_SHA}" ] && [ "${FEATURE_SHA}" != "${PHASE3_BASE_SHA}" ]; then
+        [ -n "${FEATURE_SHA}" ] && [ "${FEATURE_SHA}" != "${PHASE3_BASE_SHA}" ] &&
+        [ "${PHASE3_DONE_SEEN}" -eq 1 ]; then
+        PHASE4_BASE_SHA="${FEATURE_SHA}"
+        PHASE4_MESSAGE="Phase 4 for collaboration ${TEST_RUN_ID}. Alice's revision is ready at commit ${PHASE4_BASE_SHA}. Use these instructions directly; do not wait for file sync.
+- This phase is assigned only to charlie. If you are not charlie, do not perform it.
+- Clone ${GIT_REPO_URL}
+- Fetch '${FEATURE_BRANCH}' from origin
+- Create '${TEST_BRANCH}' from the exact commit '${PHASE4_BASE_SHA}'
+- Create verify/checklist.md with exactly:
+  # Verification
+
+  - [x] Summary section exists
+  - [x] Goals section exists
+  - [x] Review request addressed
+- Commit 'verify: proposal review checklist', push '${TEST_BRANCH}', and report PHASE4_DONE ${TEST_RUN_ID}."
         matrix_send_mention_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}" \
             "@charlie:${TEST_MATRIX_DOMAIN}" "${PHASE4_MESSAGE}" >/dev/null
         PHASE4_SENT=1
     fi
 
-    if [ -n "${TEST_SHA}" ] && [ "${PHASE4_SENT}" -eq 1 ]; then
+    if [ -n "${TEST_SHA}" ] && [ "${PHASE4_SENT}" -eq 1 ] &&
+        [ "${PHASE4_DONE_SEEN}" -eq 1 ]; then
         break
     fi
 
@@ -365,11 +402,12 @@ assert_contains_i "${VERIFY_CONTENT}" "summary" \
 assert_contains_i "${VERIFY_CONTENT}" "goals" \
     "Charlie verified the Goals requirement"
 
-if docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
-        merge-base --is-ancestor "${FEATURE_BRANCH}" "${TEST_BRANCH}" 2>/dev/null; then
-    log_pass "Verification branch is based on Alice's updated feature branch"
+if [ -n "${PHASE4_BASE_SHA}" ] &&
+    docker exec "${TEST_CONTROLLER_CONTAINER}" git --git-dir="${REPO_PATH}.git" \
+        merge-base --is-ancestor "${PHASE4_BASE_SHA}" "${TEST_BRANCH}" 2>/dev/null; then
+    log_pass "Verification branch contains Alice's completed feature revision"
 else
-    log_fail "Verification branch is not based on the updated feature branch"
+    log_fail "Verification branch does not contain Alice's completed feature revision (${PHASE4_BASE_SHA:-missing})"
 fi
 
 if [ "${TESTS_FAILED}" -gt 0 ]; then

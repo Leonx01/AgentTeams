@@ -314,7 +314,8 @@ if ! grep -Fq 'MEMBERSHIP_PIDS+=("$!")' "${git_collab_test}"; then
     fail "test 14 must verify project-room memberships concurrently"
 fi
 if ! grep -Fq 'overall timeout: 300s, no-activity timeout: 90s' "${git_collab_test}" ||
-    ! grep -Fq 'PROJECT_ACTIVITY=$(matrix_read_messages' "${git_collab_test}"; then
+    ! grep -Fq 'PROJECT_MESSAGES=$(matrix_read_messages' "${git_collab_test}" ||
+    ! grep -Fq 'PROJECT_ACTIVITY=$(echo "${PROJECT_MESSAGES}"' "${git_collab_test}"; then
     fail "test 14 must use a bounded activity-aware collaboration deadline"
 fi
 if ! grep -Fq 'matrix_send_mention_message "${MANAGER_TOKEN}" "${PROJECT_ROOM}"' "${git_collab_test}" ||
@@ -327,6 +328,14 @@ fi
 if ! grep -Fq 'PHASE3_BASE_SHA="${FEATURE_SHA}"' "${git_collab_test}" ||
     ! grep -Fq '[ "${FEATURE_SHA}" != "${PHASE3_BASE_SHA}" ]' "${git_collab_test}"; then
     fail "test 14 must wait for Alice to update the exact post-review feature SHA before starting verification"
+fi
+if ! grep -Fq 'phase_report_seen "@alice:${TEST_MATRIX_DOMAIN}" "PHASE1_DONE ${TEST_RUN_ID}"' "${git_collab_test}" ||
+    ! grep -Fq 'phase_report_seen "@bob:${TEST_MATRIX_DOMAIN}" "REVISION_NEEDED ${TEST_RUN_ID}"' "${git_collab_test}" ||
+    ! grep -Fq 'phase_report_seen "@alice:${TEST_MATRIX_DOMAIN}" "PHASE3_DONE ${TEST_RUN_ID}"' "${git_collab_test}" ||
+    ! grep -Fq 'phase_report_seen "@charlie:${TEST_MATRIX_DOMAIN}" "PHASE4_DONE ${TEST_RUN_ID}"' "${git_collab_test}" ||
+    ! grep -Fq 'PHASE4_BASE_SHA="${FEATURE_SHA}"' "${git_collab_test}" ||
+    ! grep -Fq 'merge-base --is-ancestor "${PHASE4_BASE_SHA}" "${TEST_BRANCH}"' "${git_collab_test}"; then
+    fail "test 14 must gate every phase on the assigned Worker's correlated report and verify Alice's completed revision"
 fi
 if ! grep -Fq -- '- [x] Summary section exists' "${git_collab_test}" ||
     ! grep -Fq -- '- [x] Goals section exists' "${git_collab_test}" ||
