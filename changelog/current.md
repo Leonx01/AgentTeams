@@ -1,6 +1,5 @@
 # Changelog (Unreleased)
 
-Record image-affecting changes to `manager/`, `worker/`, `openclaw-base/` here before the next release.
+Record image-affecting changes to `manager/`, `worker/`, `copaw/`, `hermes/`, `openclaw-base/`, and `agentteams-controller/` here before the next release.
 
 ---
-
