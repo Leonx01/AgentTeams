@@ -6,6 +6,7 @@ Record image-affecting changes to `manager/`, `worker/`, `copaw/`, `hermes/`, `o
 
 **Bug Fixes**
 
+- **Worker storage sync I/O amplification**: Upload changed workspace files once per successful watermark, keep jq 1.7 fallback pulls alive, and limit embedded Controller mirrors to control-plane configuration. ([#1107](https://github.com/agentscope-ai/AgentTeams/issues/1107))
 - **CoPaw Worker workspace projection**: Write Worker prompts, skills, tool configuration, and Matrix agent settings into CoPaw's default workspace so Team Leaders load their assigned role and join the Team Room. ([9074def](https://github.com/agentscope-ai/AgentTeams/commit/9074def3))
 - **Team Worker room boundary convergence**: Remove Manager again after standalone Worker infrastructure reconciliation restores regular Team Worker personal-room membership. ([b5b0add](https://github.com/agentscope-ai/AgentTeams/commit/b5b0add))
 - **Team Worker reference enforcement**: Keep referenced Worker CRs protected during direct deletion and reject Team API members whose required role is empty. ([d96f1ed](https://github.com/agentscope-ai/AgentTeams/commit/d96f1ed))
