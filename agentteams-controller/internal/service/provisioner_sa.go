@@ -232,10 +232,10 @@ func (p *Provisioner) RequestAdminSAToken(ctx context.Context) (string, error) {
 	return result.Status.Token, nil
 }
 
-// RequestSAToken issues a short-lived SA token for non-K8s backends (Docker)
+// RequestSAToken issues a long-lived SA token for non-K8s backends (Docker)
 // and remote-managed Edge workers.
 func (p *Provisioner) RequestSAToken(ctx context.Context, workerName string) (string, time.Time, error) {
-	projection, err := p.ProjectSAToken(ctx, workerName, 3600)
+	projection, err := p.ProjectSAToken(ctx, workerName, 315360000)
 	if err != nil || projection == nil {
 		return "", time.Time{}, err
 	}
