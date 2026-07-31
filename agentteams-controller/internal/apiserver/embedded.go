@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentscope-ai/AgentTeams/agentteams-controller/internal/backend"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -107,6 +108,7 @@ func Start(ctx context.Context, cfg Config) (*rest.Config, error) {
 		"--service-account-key-file=" + saPubFile,
 		"--service-account-signing-key-file=" + saKeyFile,
 		"--service-account-issuer=https://agentteams.local",
+		serviceAccountMaxTokenExpirationArg(),
 		"--token-auth-file=" + tokenFile,
 		"--authorization-mode=AlwaysAllow",
 		"--anonymous-auth=true",
@@ -149,6 +151,11 @@ func Start(ctx context.Context, cfg Config) (*rest.Config, error) {
 	}
 
 	return restCfg, nil
+}
+
+func serviceAccountMaxTokenExpirationArg() string {
+	duration := time.Duration(backend.LongLivedAuthTokenExpirationSeconds) * time.Second
+	return "--service-account-max-token-expiration=" + duration.String()
 }
 
 // waitForReady polls the apiserver until it responds to HTTP requests.

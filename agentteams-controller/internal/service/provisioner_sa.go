@@ -118,7 +118,7 @@ func (p *Provisioner) DeleteManagerServiceAccount(ctx context.Context, managerNa
 	return err
 }
 
-// RequestManagerSAToken issues a short-lived SA token for Manager in non-K8s backends.
+// RequestManagerSAToken issues a long-lived SA token for Manager in non-K8s backends.
 func (p *Provisioner) RequestManagerSAToken(ctx context.Context, managerName string) (string, error) {
 	if p.k8sClient == nil {
 		return "", nil
@@ -128,7 +128,7 @@ func (p *Provisioner) RequestManagerSAToken(ctx context.Context, managerName str
 	if audience == "" {
 		audience = authpkg.DefaultAudience
 	}
-	expSeconds := int64(315360000)
+	expSeconds := backend.LongLivedAuthTokenExpirationSeconds
 
 	tokenReq := &authenticationv1.TokenRequest{
 		Spec: authenticationv1.TokenRequestSpec{
@@ -214,7 +214,7 @@ func (p *Provisioner) RequestAdminSAToken(ctx context.Context) (string, error) {
 	if audience == "" {
 		audience = authpkg.DefaultAudience
 	}
-	expSeconds := int64(315360000)
+	expSeconds := backend.LongLivedAuthTokenExpirationSeconds
 
 	tokenReq := &authenticationv1.TokenRequest{
 		Spec: authenticationv1.TokenRequestSpec{
@@ -232,10 +232,10 @@ func (p *Provisioner) RequestAdminSAToken(ctx context.Context) (string, error) {
 	return result.Status.Token, nil
 }
 
-// RequestSAToken issues a short-lived SA token for non-K8s backends (Docker)
-// and remote-managed Edge workers.
+// RequestSAToken issues a long-lived SA token for non-K8s backends (Docker)
+// and remote-managed Edge workers that cannot rotate projected tokens.
 func (p *Provisioner) RequestSAToken(ctx context.Context, workerName string) (string, time.Time, error) {
-	projection, err := p.ProjectSAToken(ctx, workerName, 3600)
+	projection, err := p.ProjectSAToken(ctx, workerName, backend.LongLivedAuthTokenExpirationSeconds)
 	if err != nil || projection == nil {
 		return "", time.Time{}, err
 	}

@@ -19,6 +19,7 @@ Record release-facing changes here before the next release.
 
 **Bug Fixes**
 
+- **Embedded service-account token lifetime**: Allow the embedded API server and non-Kubernetes Worker, Manager, and Admin service-account tokens to use a common ten-year lifetime so restarted Docker Workers do not reuse one-hour credentials.
 - **QwenPaw MCP policy startup convergence**: Persist built-in plugin MCP policies before runtime desired-state reloads so a replacement QwenPaw workspace cannot retain the pre-policy interactive approval handler.
 - **QwenPaw Team policy and runtime-aware acceptance**: Merge Team and Worker channel-policy overrides into QwenPaw `runtime.yaml`, wait for public plugin/API state before integration assertions, and verify prompt/config files from the runtime location that consumes them.
 - **QwenPaw 2.0 tool execution**: Preserve QwenPaw's asynchronous tool-result stream while sanitizing output, and allow only the built-in TeamHarness and Workerflow MCP drivers to run without an unavailable interactive approval prompt.
@@ -48,6 +49,7 @@ Record release-facing changes here before the next release.
 
 **Bug 修复**
 
+- **Embedded ServiceAccount Token 有效期**：将 embedded API Server 与非 Kubernetes Worker、Manager、Admin ServiceAccount Token 统一为十年有效期，避免 Docker Worker 重启时继续复用一小时凭证。
 - **Worker 存储同步 I/O 放大**：基于成功 watermark 只上传变化文件，保持 jq 1.7 fallback pull 存活，并将 embedded Controller mirror 限定为控制面配置。并发创建 Worker 和未知工作目录仍保持原有持久化语义，不再反复执行全量 workspace mirror。([#1110](https://github.com/agentscope-ai/AgentTeams/pull/1110))
 - **Manager 诊断循环**：Manager 提示和 Worker 生命周期指引会停止重复执行无效果的排障命令，并以 `agt get workers` 不再列出目标 Worker 作为删除完成边界，避免继续循环探测 Matrix Room。([#975](https://github.com/agentscope-ai/AgentTeams/pull/975))
 - **CoPaw Team 路由与 workspace 投影**：将 Team Leader 分配（包括 localpart mention）路由到 Team Room，并把 Worker prompt、skills、工具配置和 Matrix 设置投影到 CoPaw 默认 workspace。([#1060](https://github.com/agentscope-ai/AgentTeams/pull/1060), [9074def](https://github.com/agentscope-ai/AgentTeams/commit/9074def3), [973e291](https://github.com/agentscope-ai/AgentTeams/commit/973e291), [92c8145](https://github.com/agentscope-ai/AgentTeams/commit/92c8145))

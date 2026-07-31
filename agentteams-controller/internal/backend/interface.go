@@ -43,7 +43,10 @@ const (
 	// built-in worker-deps PV, AgentIdentity resources, and AccessKey Secret.
 	BuiltinSandboxInstanceName        = "agentteams"
 	DefaultAuthTokenExpirationSeconds = int64(3600)
-	MinAuthTokenExpirationSeconds     = int64(600)
+	// LongLivedAuthTokenExpirationSeconds is used where a runtime cannot rotate
+	// a projected token, such as a Docker container with an injected token.
+	LongLivedAuthTokenExpirationSeconds = int64(315360000)
+	MinAuthTokenExpirationSeconds       = int64(600)
 )
 
 func NormalizeAuthTokenExpirationSeconds(seconds int64) int64 {

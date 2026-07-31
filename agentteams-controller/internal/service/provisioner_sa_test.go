@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	v1beta1 "github.com/agentscope-ai/AgentTeams/agentteams-controller/api/v1beta1"
 	authpkg "github.com/agentscope-ai/AgentTeams/agentteams-controller/internal/auth"
@@ -12,9 +13,50 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	fakeclient "k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 )
+
+func TestRequestSATokenUsesLongLivedExpiration(t *testing.T) {
+	client := fakeclient.NewSimpleClientset()
+	var requestedExpiration int64
+	client.Fake.PrependReactor("create", "serviceaccounts", func(action ktesting.Action) (bool, runtime.Object, error) {
+		createAction, ok := action.(ktesting.CreateAction)
+		if !ok || action.GetSubresource() != "token" {
+			return false, nil, nil
+		}
+		request, ok := createAction.GetObject().(*authenticationv1.TokenRequest)
+		if !ok || request.Spec.ExpirationSeconds == nil {
+			t.Fatal("expected TokenRequest with expirationSeconds")
+		}
+		requestedExpiration = *request.Spec.ExpirationSeconds
+		return true, &authenticationv1.TokenRequest{
+			Status: authenticationv1.TokenRequestStatus{
+				Token:               "worker-token",
+				ExpirationTimestamp: metav1.NewTime(time.Now().Add(time.Duration(requestedExpiration) * time.Second)),
+			},
+		}, nil
+	})
+
+	p := NewProvisioner(ProvisionerConfig{
+		K8sClient:      client,
+		Namespace:      "agentteams",
+		ResourcePrefix: authpkg.ResourcePrefix("agentteams-"),
+	})
+
+	token, _, err := p.RequestSAToken(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("RequestSAToken: %v", err)
+	}
+	if token != "worker-token" {
+		t.Fatalf("token=%q, want worker-token", token)
+	}
+	if requestedExpiration != backend.LongLivedAuthTokenExpirationSeconds {
+		t.Fatalf("expirationSeconds=%d, want %d", requestedExpiration, backend.LongLivedAuthTokenExpirationSeconds)
+	}
+}
 
 // TestProvisioner_EnsureServiceAccount_StampsControllerLabel verifies that
 // Worker and Manager SAs created by the Provisioner carry
