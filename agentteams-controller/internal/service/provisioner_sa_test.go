@@ -12,9 +12,43 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	fakeclient "k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
+
+func TestProvisioner_RequestSAToken_UsesLongLivedDockerTTL(t *testing.T) {
+	client := fakeclient.NewSimpleClientset()
+	var requestedExpiration int64
+	client.Fake.PrependReactor("create", "serviceaccounts", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		createAction := action.(k8stesting.CreateAction)
+		tokenRequest := createAction.GetObject().(*authenticationv1.TokenRequest)
+		requestedExpiration = *tokenRequest.Spec.ExpirationSeconds
+		return true, &authenticationv1.TokenRequest{
+			Status: authenticationv1.TokenRequestStatus{
+				Token: "worker-token",
+			},
+		}, nil
+	})
+
+	p := NewProvisioner(ProvisionerConfig{
+		K8sClient:      client,
+		Namespace:      "agentteams",
+		ResourcePrefix: authpkg.ResourcePrefix("agentteams-"),
+	})
+
+	token, _, err := p.RequestSAToken(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("RequestSAToken: %v", err)
+	}
+	if token != "worker-token" {
+		t.Fatalf("token=%q, want worker-token", token)
+	}
+	if requestedExpiration != 315360000 {
+		t.Fatalf("expirationSeconds=%d, want 315360000", requestedExpiration)
+	}
+}
 
 // TestProvisioner_EnsureServiceAccount_StampsControllerLabel verifies that
 // Worker and Manager SAs created by the Provisioner carry
