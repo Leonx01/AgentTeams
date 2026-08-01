@@ -6,7 +6,7 @@ Record image-affecting changes to `manager/`, `worker/`, `copaw/`, `hermes/`, `o
 
 **Bug Fixes**
 
-- **CoPaw Team assignment handoff**: Return the required Team Room `message` action from `taskflow(delegate_task)`, normalize Worker aliases from the Team roster, and reroute assignment replies from Leader DM to the Team Room. ([#1120](https://github.com/agentscope-ai/AgentTeams/pull/1120))
+- **CoPaw Team assignment handoff**: Return the required Team Room `message` action from `taskflow(delegate_task)`, normalize Worker aliases from the Team roster, and reroute assignment replies from non-Team rooms to the Team Room. ([#1120](https://github.com/agentscope-ai/AgentTeams/pull/1120))
 - **Docker Worker ServiceAccount token rotation**: Project short-lived tokens into per-Worker Docker volumes, refresh the token file atomically without recreating running Workers, and remove the credential volume with the Worker.
 - **QwenPaw MCP policy startup convergence**: Persist built-in plugin MCP policies before runtime desired-state reloads so a replacement QwenPaw workspace cannot retain the pre-policy interactive approval handler.
 - **QwenPaw Team policy and runtime-aware acceptance**: Merge Team and Worker channel-policy overrides into QwenPaw `runtime.yaml`, wait for public plugin/API state before integration assertions, and verify prompt/config files from the runtime location that consumes them.
@@ -22,7 +22,7 @@ Record image-affecting changes to `manager/`, `worker/`, `copaw/`, `hermes/`, `o
 
 **Bug 修复**
 
-- **CoPaw Team 任务分配交接**：由 `taskflow(delegate_task)` 返回必须执行的 Team Room `message` 动作，根据 Team roster 规范化 Worker 别名，并将 Leader DM 中的任务分配回复重定向到 Team Room。([#1120](https://github.com/agentscope-ai/AgentTeams/pull/1120))
+- **CoPaw Team 任务分配交接**：由 `taskflow(delegate_task)` 返回必须执行的 Team Room `message` 动作，根据 Team roster 规范化 Worker 别名，并将非 Team Room 中的任务分配回复重定向到 Team Room。([#1120](https://github.com/agentscope-ai/AgentTeams/pull/1120))
 - **Manager 诊断循环**：Manager 提示和 Worker 生命周期指引会停止重复执行无效果的排障命令，并以 `agt get workers` 不再列出目标 Worker 作为删除完成边界，避免继续循环探测 Matrix Room。([#975](https://github.com/agentscope-ai/AgentTeams/pull/975))
 
 ---

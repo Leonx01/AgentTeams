@@ -97,6 +97,32 @@ def test_team_leader_taskflow_assignment_alias_routes_to_team_room(
     )
 
 
+def test_team_leader_assignment_sent_to_leader_room_routes_to_team_room(
+    tmp_path,
+    monkeypatch,
+):
+    working_dir = _write_team_leader_assignment_context(tmp_path)
+    monkeypatch.setenv("COPAW_WORKING_DIR", str(working_dir))
+
+    ch = _make_channel("@dag-team-1-lead:hs.local")
+    client = _FakeClient()
+    ch._client = client
+    ch._send_typing = _noop_typing
+
+    asyncio.run(
+        ch.send(
+            "!leader-room:hs.local",
+            "@dev:hs.local New task [api-design]: "
+            "Read shared/tasks/api-design/spec.md and start the task.",
+        ),
+    )
+
+    assert client.sent[0][0] == "!team-room:hs.local"
+    assert client.sent[0][2]["m.mentions"] == {
+        "user_ids": ["@dag-team-1-dev:hs.local"],
+    }
+
+
 def test_team_leader_thread_final_assignment_routes_to_team_room(
     tmp_path,
     monkeypatch,
