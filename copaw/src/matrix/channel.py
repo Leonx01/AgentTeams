@@ -40,6 +40,11 @@ from nio import (
 )
 from nio.responses import JoinedMembersResponse, WhoamiResponse
 
+from copaw_worker.hooks.message_filter import (
+    canonicalize_team_worker_mentions,
+    resolve_team_leader_assignment_room,
+)
+
 logger = logging.getLogger("copaw.channels.matrix")
 
 # ---------------------------------------------------------------------------
@@ -2499,10 +2504,8 @@ class MatrixChannel(BaseChannel):
 
         for mxid in targets:
             display = self._resolve_display_name(mxid, room_id) or mxid
-            if mxid in body:
-                body = body.replace(mxid, display, 1)
-            elif display not in body:
-                body = f"{display} {body}" if body else display
+            if mxid not in body:
+                body = f"{mxid} {body}" if body else mxid
             mxid_enc = urllib.parse.quote(mxid, safe="")
             anchor = (
                 f'<a href="https://matrix.to/#/{mxid_enc}">'
@@ -2808,6 +2811,16 @@ class MatrixChannel(BaseChannel):
         root_event_id = send_meta.get(_MATRIX_OWN_THREAD_ROOT_KEY)
         if not root_event_id or not self._client:
             return
+        leader_dm_room_id = _runtime_config_field("team", "leaderDmRoomId")
+        if leader_dm_room_id and to_handle == leader_dm_room_id:
+            routed_text = canonicalize_team_worker_mentions(text)
+            routed_room_id = resolve_team_leader_assignment_room(
+                routed_text,
+                to_handle,
+            )
+            if routed_room_id != to_handle:
+                await self.send(to_handle, routed_text)
+                return
         if self._should_suppress_team_leader_internal_preamble(to_handle, text):
             logger.info(
                 "MatrixChannel: suppressing Team Leader internal preamble "
@@ -2925,6 +2938,18 @@ class MatrixChannel(BaseChannel):
             return
 
         room_id = to_handle
+        leader_dm_room_id = _runtime_config_field("team", "leaderDmRoomId")
+        if leader_dm_room_id and room_id == leader_dm_room_id:
+            text = canonicalize_team_worker_mentions(text)
+            routed_room_id = resolve_team_leader_assignment_room(text, room_id)
+            if routed_room_id != room_id:
+                logger.info(
+                    "MatrixChannel: rerouting team assignment from Leader DM %s "
+                    "to Team Room %s",
+                    room_id,
+                    routed_room_id,
+                )
+                room_id = routed_room_id
 
         # NO_REPLY protocol: agent decided it has nothing to say.
         # Suppress the outgoing message entirely to avoid triggering the
