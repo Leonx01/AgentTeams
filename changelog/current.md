@@ -19,7 +19,7 @@ Record release-facing changes here before the next release.
 
 **Bug Fixes**
 
-- **CoPaw Team assignment handoff**: Return the required Team Room `message` action directly from `taskflow(delegate_task)` so Team Leaders do not emit Worker assignments as ordinary replies in Leader DM. ([#1120](https://github.com/agentscope-ai/AgentTeams/pull/1120))
+- **CoPaw Team assignment handoff**: Return the required Team Room `message` action from `taskflow(delegate_task)`, normalize Worker aliases from the Team roster, and reroute assignment replies from Leader DM to the Team Room. ([#1120](https://github.com/agentscope-ai/AgentTeams/pull/1120))
 - **Docker Worker ServiceAccount token rotation**: Project short-lived tokens into per-Worker Docker volumes, refresh the token file atomically without recreating running Workers, and remove the credential volume with the Worker.
 - **QwenPaw MCP policy startup convergence**: Persist built-in plugin MCP policies before runtime desired-state reloads so a replacement QwenPaw workspace cannot retain the pre-policy interactive approval handler.
 - **QwenPaw Team policy and runtime-aware acceptance**: Merge Team and Worker channel-policy overrides into QwenPaw `runtime.yaml`, wait for public plugin/API state before integration assertions, and verify prompt/config files from the runtime location that consumes them.
@@ -50,7 +50,7 @@ Record release-facing changes here before the next release.
 
 **Bug 修复**
 
-- **CoPaw Team 任务分配交接**：由 `taskflow(delegate_task)` 直接返回必须执行的 Team Room `message` 动作，避免 Team Leader 将 Worker 任务分配作为普通回复发送到 Leader DM。([#1120](https://github.com/agentscope-ai/AgentTeams/pull/1120))
+- **CoPaw Team 任务分配交接**：由 `taskflow(delegate_task)` 返回必须执行的 Team Room `message` 动作，根据 Team roster 规范化 Worker 别名，并将 Leader DM 中的任务分配回复重定向到 Team Room。([#1120](https://github.com/agentscope-ai/AgentTeams/pull/1120))
 - **Worker 存储同步 I/O 放大**：基于成功 watermark 只上传变化文件，保持 jq 1.7 fallback pull 存活，并将 embedded Controller mirror 限定为控制面配置。并发创建 Worker 和未知工作目录仍保持原有持久化语义，不再反复执行全量 workspace mirror。([#1110](https://github.com/agentscope-ai/AgentTeams/pull/1110))
 - **Manager 诊断循环**：Manager 提示和 Worker 生命周期指引会停止重复执行无效果的排障命令，并以 `agt get workers` 不再列出目标 Worker 作为删除完成边界，避免继续循环探测 Matrix Room。([#975](https://github.com/agentscope-ai/AgentTeams/pull/975))
 - **CoPaw Team 路由与 workspace 投影**：将 Team Leader 分配（包括 localpart mention）路由到 Team Room，并把 Worker prompt、skills、工具配置和 Matrix 设置投影到 CoPaw 默认 workspace。([#1060](https://github.com/agentscope-ai/AgentTeams/pull/1060), [9074def](https://github.com/agentscope-ai/AgentTeams/commit/9074def3), [973e291](https://github.com/agentscope-ai/AgentTeams/commit/973e291), [92c8145](https://github.com/agentscope-ai/AgentTeams/commit/92c8145))
