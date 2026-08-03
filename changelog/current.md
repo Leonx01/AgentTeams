@@ -11,7 +11,7 @@ Record image-affecting changes to `manager/`, `worker/`, `copaw/`, `hermes/`, `o
 
 **Bug Fixes**
 
-- **CoPaw to QwenPaw Worker state migration**: Restore Worker storage before creating any QwenPaw directories, migrate and verify both `.copaw` runtime state and `.copaw.secret` credentials with legacy state authoritative on conflicts, rebase migrated workspace metadata to `.qwenpaw`, persist migrated files before the idempotency marker, and cover a real CoPaw persistence → QwenPaw runtime switch in E2E tests.
+- **CoPaw to QwenPaw Worker state migration**: Restore Worker storage before creating any QwenPaw directories, migrate and verify both `.copaw` runtime state and `.copaw.secret` credentials with legacy state authoritative on conflicts, rebase migrated workspace metadata to `.qwenpaw`, persist migrated files before the idempotency marker, and cover a real CoPaw persistence → QwenPaw runtime switch in E2E tests. ([c0b4bac](https://github.com/agentscope-ai/AgentTeams/commit/c0b4bac68ea94fa0887cf14747d368916986c347))
 - **CoPaw Team assignment handoff**: `taskflow(delegate_task)` sends the Worker assignment automatically with `m.mentions` in the Team Room (atomic pending → prepared → assigned state, stable Matrix txn_id for idempotent retries, normalize Worker aliases from the Team roster, refresh Controller-managed runtime context every minute, and reroute assignment replies from non-Team rooms to the Team Room). ([#1120](https://github.com/agentscope-ai/AgentTeams/pull/1120), [#1095](https://github.com/agentscope-ai/AgentTeams/pull/1095))
 - **Docker Worker ServiceAccount token rotation**: Project short-lived tokens into per-Worker Docker volumes, refresh the token file atomically without recreating running Workers, and remove the credential volume with the Worker.
 - **Worker port exposure CLI**: Encode `--expose` values as numeric ports and reject invalid or out-of-range inputs before create, update, or apply requests reach the Controller.
@@ -32,7 +32,7 @@ Record image-affecting changes to `manager/`, `worker/`, `copaw/`, `hermes/`, `o
 
 **Bug 修复**
 
-- **CoPaw 到 QwenPaw Worker 状态迁移**：在创建任何 QwenPaw 目录前先恢复 Worker 存储，迁移并校验 `.copaw` 运行时状态和 `.copaw.secret` 凭据，冲突时以旧 CoPaw 状态为准，将工作区元数据改写到 `.qwenpaw`，先持久化迁移数据再写入幂等标记，并增加真实 CoPaw 持久化后切换 QwenPaw 的 E2E 覆盖。
+- **CoPaw 到 QwenPaw Worker 状态迁移**：在创建任何 QwenPaw 目录前先恢复 Worker 存储，迁移并校验 `.copaw` 运行时状态和 `.copaw.secret` 凭据，冲突时以旧 CoPaw 状态为准，将工作区元数据改写到 `.qwenpaw`，先持久化迁移数据再写入幂等标记，并增加真实 CoPaw 持久化后切换 QwenPaw 的 E2E 覆盖。([c0b4bac](https://github.com/agentscope-ai/AgentTeams/commit/c0b4bac68ea94fa0887cf14747d368916986c347))
 - **CoPaw Team 任务分配交接**：由 `taskflow(delegate_task)` 返回必须执行的 Team Room `message` 动作，根据 Team roster 规范化 Worker 别名，每分钟刷新 Controller 管理的运行时上下文，并将非 Team Room 中的任务分配回复重定向到 Team Room。([#1120](https://github.com/agentscope-ai/AgentTeams/pull/1120))
 - **Worker 端口暴露 CLI**：将 `--expose` 参数编码为数值端口，并在创建、更新或应用请求到达 Controller 前拒绝无效或越界输入。
 - **Manager 诊断循环**：Manager 提示和 Worker 生命周期指引会停止重复执行无效果的排障命令，并以 `agt get workers` 不再列出目标 Worker 作为删除完成边界，避免继续循环探测 Matrix Room。([#975](https://github.com/agentscope-ai/AgentTeams/pull/975))
