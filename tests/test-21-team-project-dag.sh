@@ -460,7 +460,7 @@ curl -sf "http://127.0.0.1:6167/_matrix/client/v3/rooms/${ROOM_ENC}/messages?dir
     -H "Authorization: Bearer ${TOKEN}" | jq -c "
         [.chunk[] | select(.type == \"m.room.message\")]
         | {
-            assignments: [.[] | select((.content.body // \"\") | test(\"assigned task|TASK_ASSIGNED\")) | {event_id, mentions: (.content[\"m.mentions\"] // {})}],
+            assignments: [.[] | select((.content.body // \"\") | test(\"assigned task|task assigned|TASK_ASSIGNED\"; \"i\")) | {event_id, mentions: (.content[\"m.mentions\"] // {})}],
             worker_acks: [.[] | select((.content.body // \"\") | test(\"TASK_COMPLETED|ack\")) | .event_id]
         }
     "
