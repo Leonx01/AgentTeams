@@ -445,9 +445,13 @@ fi
 # Section 8b: E2E delivery contract — m.mentions + event_id + no duplicate
 # ------------------------------------------------------------
 # The automatic delegate_task notification must appear in the Team Room as a
-# single message carrying m.mentions (MSC3952) and a server event_id. A
-# second manual assignment message from the Leader would produce a duplicate
-# TASK_ASSIGNED delivery; assert the assignment was delivered at most once.
+# single message carrying m.mentions (MSC3952) and a server event_id. Identify
+# assignment candidates by the Leader sender, target Worker, and task path
+# instead of model-generated wording (for example "assigned task" or
+# "New task"). Keep a body-based fallback so a real assignment that is
+# missing m.mentions is still selected and reported as a contract failure.
+# A second manual assignment message from the Leader would produce another
+# candidate; assert the assignment was delivered at most once.
 log_section "E2E Delivery Contract: m.mentions + event_id + single delivery"
 
 DELIVERY_CONTRACT_OK=true
@@ -460,7 +464,26 @@ curl -sf "http://127.0.0.1:6167/_matrix/client/v3/rooms/${ROOM_ENC}/messages?dir
     -H "Authorization: Bearer ${TOKEN}" | jq -c "
         [.chunk[] | select(.type == \"m.room.message\")]
         | {
-            assignments: [.[] | select((.content.body // \"\") | test(\"assigned task|task assigned|TASK_ASSIGNED\"; \"i\")) | {event_id, mentions: (.content[\"m.mentions\"] // {})}],
+            assignments: [
+                .[]
+                | (.content.body // \"\") as \$body
+                | (.content[\"m.mentions\"].user_ids // []) as \$mentioned
+                | select(
+                    .sender == \"'${LEADER_MATRIX_ID}'\"
+                    and (
+                        (\$mentioned | index(\"'${W1_MATRIX_ID}'\")) != null
+                        or (\$mentioned | index(\"'${W2_MATRIX_ID}'\")) != null
+                        or (
+                            (\$body | contains(\"shared/tasks/\"))
+                            and (
+                                (\$body | contains(\"'${W1_MATRIX_ID}'\"))
+                                or (\$body | contains(\"'${W2_MATRIX_ID}'\"))
+                            )
+                        )
+                    )
+                )
+                | {event_id, mentions: (.content[\"m.mentions\"] // {})}
+            ],
             worker_acks: [.[] | select((.content.body // \"\") | test(\"TASK_COMPLETED|ack\")) | .event_id]
         }
     "
