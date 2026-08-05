@@ -103,8 +103,8 @@ if [ -n "${RUNTIME}" ]; then
     [ -n "${WORKER_SKILLS}" ] && CLI_ARGS+=(--skills "${WORKER_SKILLS}")
     [ -n "${MCP_SERVERS}" ]   && CLI_ARGS+=(--mcp-servers "${MCP_SERVERS}")
 
-    log "Step 1: Calling: agentteams ${CLI_ARGS[*]}"
-    if ! CLI_OUT=$(agentteams "${CLI_ARGS[@]}" 2>&1); then
+    log "Step 1: Calling: agt ${CLI_ARGS[*]}"
+    if ! CLI_OUT=$(agt "${CLI_ARGS[@]}" 2>&1); then
         _fail "agt update worker failed: ${CLI_OUT}"
     fi
     log "  ${CLI_OUT}"
