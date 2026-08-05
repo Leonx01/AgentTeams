@@ -22,6 +22,7 @@ from qwenpaw_worker.worker import BUILTIN_QWENPAW_PLUGIN_MARKER, Worker
 @pytest.fixture(autouse=True)
 def _clear_agent_workspace_env():
     original = os.environ.pop("AGENT_WORKSPACE", None)
+    original_qwenpaw_secret_dir = os.environ.pop("QWENPAW_SECRET_DIR", None)
     try:
         yield
     finally:
@@ -29,6 +30,10 @@ def _clear_agent_workspace_env():
             os.environ.pop("AGENT_WORKSPACE", None)
         else:
             os.environ["AGENT_WORKSPACE"] = original
+        if original_qwenpaw_secret_dir is None:
+            os.environ.pop("QWENPAW_SECRET_DIR", None)
+        else:
+            os.environ["QWENPAW_SECRET_DIR"] = original_qwenpaw_secret_dir
 
 
 def _runtime_yaml(
@@ -569,6 +574,94 @@ def test_migrate_legacy_copaw_working_dir_to_qwenpaw(tmp_path: Path) -> None:
     assert (cfg.qwenpaw_working_dir / "workspaces" / "default").read_text(encoding="utf-8") == "state"
     assert (cfg.worker_home / ".qwenpaw.secret" / "providers.json").read_text(encoding="utf-8") == "legacy-provider"
     assert pushed[-1] == [".qwenpaw/.copaw-migrated"]
+
+
+def test_migrate_legacy_copaw_secret_to_configured_absolute_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _config(tmp_path)
+    legacy_secret = cfg.worker_home / ".copaw.secret"
+    legacy_secret.mkdir(parents=True)
+    (legacy_secret / "providers.json").write_text("legacy-provider", encoding="utf-8")
+    target_secret = cfg.worker_home / "credentials" / "qwenpaw"
+    monkeypatch.setenv("QWENPAW_SECRET_DIR", str(target_secret))
+    worker = Worker(cfg)
+    pushed = []
+
+    class Sync:
+        def push_directories(self, directories):
+            pushed.append(list(directories))
+            return []
+
+        def push_paths(self, paths):
+            pushed.append(list(paths))
+            return []
+
+    worker.sync = Sync()
+
+    assert worker._migrate_legacy_state() is True
+    assert (target_secret / "providers.json").read_text(encoding="utf-8") == "legacy-provider"
+    assert not (cfg.worker_home / ".qwenpaw.secret").exists()
+    assert pushed[0] == [target_secret]
+
+
+def test_migrate_legacy_copaw_secret_to_configured_relative_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _config(tmp_path)
+    legacy_secret = cfg.worker_home / ".copaw.secret"
+    legacy_secret.mkdir(parents=True)
+    (legacy_secret / "providers.json").write_text("legacy-provider", encoding="utf-8")
+    target_secret = cfg.worker_home / "qwenpaw-secret"
+    monkeypatch.setenv("QWENPAW_SECRET_DIR", "../../../qwenpaw-secret")
+    worker = Worker(cfg)
+    worker._prepare_env()
+    worker.sync = type(
+        "Sync",
+        (),
+        {
+            "push_directories": lambda _self, _directories: [],
+            "push_paths": lambda _self, _paths: [],
+        },
+    )()
+
+    assert os.environ["QWENPAW_SECRET_DIR"] == "../../../qwenpaw-secret"
+    assert worker._migrate_legacy_state() is True
+    assert (target_secret / "providers.json").read_text(encoding="utf-8") == "legacy-provider"
+    assert not (cfg.worker_home / ".qwenpaw.secret").exists()
+
+
+def test_migrate_legacy_copaw_secret_rejects_dir_outside_worker_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _config(tmp_path)
+    legacy_workspace = cfg.worker_home / ".copaw" / "workspaces" / "default"
+    legacy_workspace.mkdir(parents=True)
+    (legacy_workspace / "chats.json").write_text("legacy-session", encoding="utf-8")
+    legacy_secret = cfg.worker_home / ".copaw.secret"
+    legacy_secret.mkdir()
+    (legacy_secret / "providers.json").write_text("legacy-provider", encoding="utf-8")
+    outside_secret = tmp_path / "outside-secret"
+    monkeypatch.setenv("QWENPAW_SECRET_DIR", str(outside_secret))
+    worker = Worker(cfg)
+    worker.sync = type(
+        "Sync",
+        (),
+        {
+            "push_directories": lambda _self, _directories: pytest.fail("must reject before persistence"),
+            "push_paths": lambda _self, _paths: pytest.fail("must not persist a migration marker"),
+        },
+    )()
+
+    with pytest.raises(ValueError, match="QWENPAW_SECRET_DIR is outside worker storage root"):
+        worker._migrate_legacy_state()
+
+    assert (legacy_secret / "providers.json").is_file()
+    assert not outside_secret.exists()
+    assert not cfg.qwenpaw_working_dir.exists()
 
 
 def test_migrate_legacy_copaw_state_recovers_existing_qwenpaw_dir(tmp_path: Path) -> None:

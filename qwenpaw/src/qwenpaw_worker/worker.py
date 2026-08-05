@@ -314,7 +314,6 @@ class Worker:
         legacy_dir = worker_home / ".copaw"
         legacy_secret_dir = worker_home / ".copaw.secret"
         target_dir = self.config.qwenpaw_working_dir
-        target_secret_dir = worker_home / ".qwenpaw.secret"
         marker = target_dir / COPAW_MIGRATION_MARKER
 
         if marker.is_file():
@@ -327,6 +326,15 @@ class Worker:
             return False
         if not legacy_dir.exists() and not legacy_secret_dir.exists():
             return False
+
+        target_secret_dir = self._qwenpaw_secret_dir()
+        if legacy_secret_dir.exists():
+            try:
+                target_secret_dir.relative_to(worker_home.expanduser().resolve())
+            except ValueError:
+                raise ValueError(
+                    f"QWENPAW_SECRET_DIR is outside worker storage root: {target_secret_dir}",
+                ) from None
 
         copied_paths = []
         migrated_directories = []
@@ -361,6 +369,18 @@ class Worker:
             marker,
         )
         return True
+
+    def _qwenpaw_secret_dir(self) -> Path:
+        """Resolve the secret directory as the QwenPaw child process does."""
+
+        configured = os.environ.get(
+            "QWENPAW_SECRET_DIR",
+            f"{self.config.qwenpaw_working_dir}.secret",
+        )
+        secret_dir = Path(configured).expanduser()
+        if not secret_dir.is_absolute():
+            secret_dir = self.config.default_workspace_dir / secret_dir
+        return secret_dir.resolve()
 
     def _rebase_migrated_workspace_paths(self, target_dir: Path) -> None:
         """Point migrated CoPaw workspace metadata at the active QwenPaw tree."""
