@@ -255,12 +255,14 @@ fi
 # ============================================================
 log_section "Switch Runtime (copaw → qwenpaw)"
 
-QWEN_SWITCH_OUTPUT=$(exec_in_agent agt apply worker --name "${TEST_WORKER}" --runtime qwenpaw 2>&1)
+QWEN_SWITCH_OUTPUT=$(exec_in_agent bash \
+    /opt/agentteams/agent/skills/worker-management/scripts/update-worker-config.sh \
+    --name "${TEST_WORKER}" --runtime qwenpaw 2>&1)
 QWEN_SWITCH_EXIT=$?
 if [ "${QWEN_SWITCH_EXIT}" -eq 0 ]; then
-    log_pass "agt apply (qwenpaw) accepted"
+    log_pass "Worker management runtime switch to qwenpaw accepted"
 else
-    log_fail "agt apply (qwenpaw) failed: ${QWEN_SWITCH_OUTPUT}"
+    log_fail "Worker management runtime switch to qwenpaw failed: ${QWEN_SWITCH_OUTPUT}"
 fi
 
 COPAW_CONTAINER_ID="${NEW_CONTAINER_ID}"

@@ -11,6 +11,7 @@ Record image-affecting changes to `manager/`, `worker/`, `copaw/`, `hermes/`, `o
 
 **Bug Fixes**
 
+- **QwenPaw Worker runtime management**: Recognize `qwenpaw` as a valid Worker runtime in Manager guidance and runtime-switch validation, and align Worker CLI help with the Controller's supported runtimes.
 - **CoPaw Team Worker resolution**: Resolve task assignment Matrix IDs from the Controller-owned `runtime.yaml` Team roster before falling back to legacy `AGENTS.md`, so a running Team Leader can delegate after late Team context injection without relying on a stale prompt copy.
 - **CoPaw to QwenPaw Worker state migration**: Restore Worker storage before creating any QwenPaw directories, migrate and verify both `.copaw` runtime state and `.copaw.secret` credentials with legacy state authoritative on conflicts, rebase migrated workspace metadata to `.qwenpaw`, persist migrated files before the idempotency marker, and cover a real CoPaw persistence → QwenPaw runtime switch in E2E tests. ([c0b4bac](https://github.com/agentscope-ai/AgentTeams/commit/c0b4bac68ea94fa0887cf14747d368916986c347))
 - **CoPaw Team assignment handoff**: `taskflow(delegate_task)` sends the Worker assignment automatically with `m.mentions` in the Team Room (atomic pending → prepared → assigned state, stable Matrix txn_id for idempotent retries, normalize Worker aliases from the Team roster, refresh Controller-managed runtime context every minute, and reroute assignment replies from non-Team rooms to the Team Room). ([#1120](https://github.com/agentscope-ai/AgentTeams/pull/1120), [#1095](https://github.com/agentscope-ai/AgentTeams/pull/1095))
@@ -33,6 +34,7 @@ Record image-affecting changes to `manager/`, `worker/`, `copaw/`, `hermes/`, `o
 
 **Bug 修复**
 
+- **QwenPaw Worker 运行时管理**：在 Manager 指引和运行时切换校验中将 `qwenpaw` 识别为合法 Worker runtime，并使 Worker CLI 帮助与 Controller 实际支持的运行时保持一致。
 - **CoPaw Team Worker 解析**：任务分配优先从 Controller 管理的 `runtime.yaml` Team roster 获取 Matrix ID，仅在旧部署缺少该 roster 时回退 `AGENTS.md`，避免运行中的 Team Leader 因 prompt 副本过期而无法委派任务。
 - **CoPaw 到 QwenPaw Worker 状态迁移**：在创建任何 QwenPaw 目录前先恢复 Worker 存储，迁移并校验 `.copaw` 运行时状态和 `.copaw.secret` 凭据，冲突时以旧 CoPaw 状态为准，将工作区元数据改写到 `.qwenpaw`，先持久化迁移数据再写入幂等标记，并增加真实 CoPaw 持久化后切换 QwenPaw 的 E2E 覆盖。([c0b4bac](https://github.com/agentscope-ai/AgentTeams/commit/c0b4bac68ea94fa0887cf14747d368916986c347))
 - **CoPaw Team 任务分配交接**：由 `taskflow(delegate_task)` 返回必须执行的 Team Room `message` 动作，根据 Team roster 规范化 Worker 别名，每分钟刷新 Controller 管理的运行时上下文，并将非 Team Room 中的任务分配回复重定向到 Team Room。([#1120](https://github.com/agentscope-ai/AgentTeams/pull/1120))
